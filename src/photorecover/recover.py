@@ -34,6 +34,7 @@ BOX_TYPES = {b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide", b"uuid", b"me
 
 FOLDER_OK = "Recovered"
 FOLDER_PARTIAL = "Recovered - Partial"
+FOLDER_FILLED = "Recovered - Preview filled"
 
 GRADE_VERIFIED = "Verified"
 GRADE_NO_PREVIEW = "Complete, no preview"
@@ -58,12 +59,49 @@ class Item:
     chain: list[int] = field(default_factory=list)
     out_bytes: int = 0
     saved_as: str = ""
+    filled_as: str = ""             # a second copy whose missing part is filled in from the preview
     mtime: tuple | None = None
     candidates: list = field(default_factory=list)
     picks: list = field(default_factory=list)
     _hint = None                    # chain suggested by the file system, if any
     _last = None                    # last rebuild attempt
     _forced: dict = field(default_factory=dict, repr=False)   # choices made by a person: chain index -> cluster
+
+
+def preview_fill(data: bytes, percent: float) -> bytes | None:
+    """A copy of a partly recovered photo whose missing lower part is filled in from the
+    photo's own small preview, enlarged. The filled part is blurry but it is the real
+    picture, not an invention. None if the photo has no usable preview."""
+    from PIL import ImageFile
+    try:
+        info = jpeg.parse_header(data)
+        thumb = jpeg.decode_thumb(info)
+        if thumb is None or percent <= 0:
+            return None
+        w, h = info.width, info.height
+        fill = Image.fromarray(np.clip(thumb, 0, 255).astype(np.uint8), "YCbCr").convert("RGB")
+        fill = fill.resize((w, h), Image.BICUBIC)
+        old = ImageFile.LOAD_TRUNCATED_IMAGES
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        try:
+            with Image.open(io.BytesIO(bytes(data) + b"\xff\xd9")) as im:
+                real = im.convert("RGB")
+        finally:
+            ImageFile.LOAD_TRUNCATED_IMAGES = old
+        if real.size != (w, h):
+            return None
+        good = max(0, (int(percent / 100.0 * h) // 16 - 1) * 16)   # whole block rows known to be real
+        fade = min(24, good)
+        mask = np.zeros((h, 1), np.float32)                         # 1 where the real picture is kept
+        mask[:good - fade] = 1.0
+        if fade:
+            mask[good - fade:good, 0] = np.linspace(1.0, 0.0, fade)
+        a = np.asarray(real, np.float32) * mask[:, :, None] + np.asarray(fill, np.float32) * (1 - mask[:, :, None])
+        buf = io.BytesIO()
+        Image.fromarray(np.clip(a, 0, 255).astype(np.uint8), "RGB").save(buf, "JPEG", quality=92)
+        return buf.getvalue()
+    except Exception:  # noqa: BLE001 - this copy is a convenience; the partial file is already saved
+        return None
 
 
 def _valid_isobmff(data) -> bool:
@@ -214,6 +252,18 @@ class Recovery:
         vol = self.vol
         self.log("Reading the card's folders, including deleted ones")
         entries = vol.scan_entries()
+        self.old_layout = None
+        try:
+            from .legacy import find_old_layout
+            old = find_old_layout(vol, entries, self.log)
+        except Exception as e:  # noqa: BLE001
+            old = None
+            self.problems.append(f"looking for an older layout: {type(e).__name__}: {e}")
+        if old is not None:
+            # the card was reformatted with different settings: read it the way it used to be
+            self.old_layout = dict(cluster_size=old.cl, data_offset=old.data_off)
+            self.vol = vol = old
+            entries = vol.scan_entries()
         blank = vol.blank_clusters()
         allocated = vol.allocated()
         avail = ~allocated & ~blank
@@ -405,7 +455,8 @@ class Recovery:
         self.summary = dict(tool=f"photorecover {__version__}", filesystem=vol.kind,
                             cluster_size=cl, clusters=vol.ncl, card_in_use=round(float(used_fraction), 3),
                             files_listed=len(items), counts=self._counts(), seconds=round(time.time() - t0, 1),
-                            fast_decoder=jpeg.HAVE_C, problems=self.problems[:50])
+                            fast_decoder=jpeg.HAVE_C, problems=self.problems[:50],
+                            old_layout=self.old_layout)
         if self.out:
             self._write_report()
         return self.summary
@@ -475,10 +526,12 @@ class Recovery:
             it._forced[len(r.chain)] = cluster
             r2 = self._rb.rebuild(it.start, it.size, forced=dict(it._forced))
             it._last = r2
+            for rel in (it.saved_as, it.filled_as):      # what was saved before is about to be replaced
+                if rel and self.out:
+                    (self.out / rel).unlink(missing_ok=True)
+                    self._taken.discard(rel.lower())
+            it.saved_as = it.filled_as = ""
             if r2.status == "complete" and r2.exact_end:
-                if it.saved_as and self.out:
-                    (self.out / it.saved_as).unlink(missing_ok=True)
-                    self._taken.discard(it.saved_as.lower())
                 pieces = 1 + sum(1 for a, b in zip(r2.chain, r2.chain[1:]) if b != a + 1)
                 self._accept(it, r2, f"rebuilt from {pieces} pieces, {len(it._forced)} chosen by eye")
                 it.note, it.candidates, it.saved_as = "", [], ""
@@ -488,6 +541,7 @@ class Recovery:
                 it.chain, it.percent, it.picks, it.candidates = r2.chain, r2.percent, r2.picks, r2.candidates
                 it.note = r2.reason
                 it.grade = GRADE_REVIEW if (r2.status == "review" and r2.candidates) else GRADE_PARTIAL
+                self._deliver_item(it)
         self.summary["counts"] = self._counts()
         if self.out:
             self._write_report()
@@ -583,10 +637,21 @@ class Recovery:
                 except (ValueError, OverflowError, OSError):
                     pass
             it.saved_as = rel
+            if it.kind == "jpeg" and it.percent < 100.0:
+                filled = preview_fill(data, it.percent)
+                if filled:
+                    frel = "/".join([FOLDER_FILLED] + rel.split("/")[1:])
+                    stem, dot, ext = frel.rpartition(".")
+                    frel = stem.rsplit(" (", 1)[0] + f" ({it.percent:.0f}% real, rest from preview).jpg"
+                    fdest = self.out / frel
+                    fdest.parent.mkdir(parents=True, exist_ok=True)
+                    fdest.write_bytes(filled)
+                    taken.add(frel.lower())
+                    it.filled_as = frel
 
     def _write_report(self) -> None:
         from .report import write_html
-        rows = [dict(name=i.name, folder=i.folder, grade=i.grade, percent=i.percent, method=i.method,
+        rows = [dict(name=i.name, folder=i.folder, grade=i.grade, percent=i.percent, method=i.method, filled_as=i.filled_as,
                      note=i.note, bytes=i.out_bytes, saved_as=i.saved_as, source=i.source,
                      start_cluster=i.start, clusters=len(i.chain), picks=i.picks, candidates=i.candidates)
                 for i in self.items]

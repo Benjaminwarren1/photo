@@ -39,12 +39,15 @@ photorecover recover card.img --out recovered
 
 `--json` prints a machine-readable summary, and `report.json` in the output folder lists every file.
 
+`photorecover pilot card.img` runs the same recovery and then takes the close calls as JSON lines on standard input (`unresolved`, `candidates`, `pick`), so a script or an AI assistant can look at the candidate pictures and choose. A choice is only kept if the finished photo passes the same checks as any other.
+
 Output:
 
 | Folder | What goes in it |
 |---|---|
 | `Recovered` | Files that passed every check |
 | `Recovered - Partial` | The good part of files that are incomplete or need a person to decide |
+| `Recovered - Preview filled` | A second copy of each partial photo, with the missing part filled in from the photo's own small preview. The filled part is blurry, but it is the real picture |
 | `report.html` | One line per file: result, how it was recovered, and notes |
 
 The image is opened read-only and is never changed.

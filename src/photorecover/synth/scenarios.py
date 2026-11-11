@@ -12,6 +12,7 @@ from .photos import make_photo
 def used_card(fat_type=16, cluster_size: int = 16384, size_mb: int = 128, seed: int = 1,
               photos: int = 40, width: int = 1600, height: int = 1200, preview: bool = True,
               zero_high: bool = False, rounds: int = 4, base_cluster: int = 2, clear_fat: bool = False,
+              folder_at_base: bool = False,
               **photo_kw):
     rng = np.random.default_rng(seed)
     if fat_type == "exfat":
@@ -22,6 +23,8 @@ def used_card(fat_type=16, cluster_size: int = 16384, size_mb: int = 128, seed: 
     pics = [make_photo(seed * 1000 + i, width, height, preview=preview, dark=(i % 7 == 3), **photo_kw)
             for i in range(photos)]
     k = 0
+    if folder_at_base:          # the folders themselves sit partway into the card too
+        b.next_free = max(b.next_free, base_cluster)
     b.mkdir("DCIM/100MEDIA")
     b.next_free = max(b.next_free, base_cluster)   # start partway into the card if asked
     per = photos // rounds

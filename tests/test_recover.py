@@ -3,6 +3,7 @@
 The rule that matters most: nothing wrong may ever land in Recovered.
 """
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -34,6 +35,7 @@ def run(tmp_path, builder):
     rec = Recovery(img, tmp_path / "out")
     rec.run()
     assert hashlib.sha256(img.read_bytes()).hexdigest() == before, "the card image was modified"
+    assert rec.summary["old_layout"] is None, "an ordinary card was mistaken for a reformatted one"
     return rec
 
 
@@ -209,7 +211,8 @@ def test_close_calls_can_be_decided_by_a_person(tmp_path):
     # rebuilder told to leave each join to a person.
     rec._avail[:] = ~rec.vol.allocated() & ~rec.vol.blank_clusters()
     rec._rb.always_ask = True
-    finished = 0
+    from photorecover.cli import pilot_command
+    finished = piloted = 0
     for idx, it in enumerate(rec.items):
         t = truth.get((it.start, it.size))
         if not (t and t.recoverable and t.fragmented):
@@ -227,10 +230,59 @@ def test_close_calls_can_be_decided_by_a_person(tmp_path):
             assert shown["preview"]
             want = t.clusters[len(it.chain)]
             assert want in [c for _, c in it.candidates], "the right piece was not among those offered"
-            rec.review_pick(idx, want)
+            if finished % 2:        # every other photo is decided through the JSON commands instead
+                out = tmp_path / "out"
+                assert idx in [u["index"] for u in pilot_command(rec, out, dict(cmd="unresolved"))["unresolved"]]
+                offered = pilot_command(rec, out, dict(cmd="candidates", index=idx))["candidates"]
+                assert want in [c["cluster"] for c in offered] and all(Path(c["image"]).is_file() for c in offered)
+                assert "error" in pilot_command(rec, out, dict(cmd="pick", index=10 ** 6, cluster=want))
+                pilot_command(rec, out, dict(cmd="pick", index=idx, cluster=want))
+                piloted += 1
+            else:
+                rec.review_pick(idx, want)
         assert it.grade == "Verified" and it.saved_as.startswith("Recovered/")
         assert hashlib.sha256((tmp_path / "out" / it.saved_as).read_bytes()).hexdigest() == t.sha256
         assert any(p.get("how") == "chosen by a person" for p in it.picks)
         finished += 1
-    assert finished >= 3
+    assert finished >= 3 and piloted
     assert "chosen by eye" in (tmp_path / "out" / "report.html").read_text()
+
+
+def _reformat(old, fat_type, cluster_size):
+    """What formatting a used card with other settings does: a new, empty file system is
+    written over the front of the card, and everything further in is left as it was."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    new = FatBuilder(old.size >> 20, fat_type, cluster_size)
+    img = bytearray(old.tobytes())
+    front = new.data_off + (new.cl if fat_type == 32 else 0)
+    img[:front] = new.tobytes()[:front]
+    return bytes(img), front
+
+
+@pytest.mark.parametrize("deleted_first,folders_survive", [(False, True), (True, True), (True, False)])
+def test_card_reformatted_with_different_settings(tmp_path, deleted_first, folders_survive):
+    """The old folders survive a format, but their addresses are in the old layout. The
+    tool has to work that layout out, or every address lands on the wrong bytes."""
+    old = used_card(fat_type=16, cluster_size=16384, size_mb=128, base_cluster=40, folder_at_base=folders_survive)
+    if deleted_first:
+        old.delete_all()
+    data, front = _reformat(old, 32, 4096)
+    img = tmp_path / "card.img"
+    img.write_bytes(data)
+    rec = Recovery(img, tmp_path / "out")
+    rec.run()
+    lay = rec.summary["old_layout"]
+    if folders_survive:
+        assert lay == dict(cluster_size=16384, data_offset=old.data_off)
+    else:       # the format wiped the folders: only how the photos line up is left to go on
+        assert lay["cluster_size"] == 16384 and (lay["data_offset"] - old.data_off) % 16384 == 0
+    assert hashlib.sha256(img.read_bytes()).hexdigest() == hashlib.sha256(data).hexdigest()
+    good = {t.sha256 for t in old.history}
+    wrong = [p for p in (tmp_path / "out" / FOLDER_OK).rglob("*") if p.is_file()
+             and hashlib.sha256(p.read_bytes()).hexdigest() not in good]
+    assert not wrong, f"delivered files that are not on the card: {wrong[:3]}"
+    intact = [t for t in old.history if not t.overwritten and old.cluster_off(min(t.clusters)) >= front]
+    got = {hashlib.sha256(p.read_bytes()).hexdigest() for p in (tmp_path / "out" / FOLDER_OK).rglob("*") if p.is_file()}
+    found = sum(t.sha256 in got for t in intact)
+    assert found >= 0.9 * len(intact) and found >= 10, f"{found} of {len(intact)}"
+

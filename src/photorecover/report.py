@@ -32,6 +32,9 @@ def write_html(path: Path, summary: dict, rows: list[dict]) -> None:
            f"<p><small>{e(summary.get('tool', ''))} · {e(summary.get('filesystem', ''))} card · "
            f"{summary.get('files_listed', 0)} files · took {summary.get('seconds', 0)} s. "
            "The card image was only read, never changed.</small></p>",
+           ("<p>This card had been reformatted with different settings. The files below were read using the "
+            f"layout the card had before ({summary['old_layout']['cluster_size'] // 1024 or 1} KB blocks), "
+            "worked out from what is still on it.</p>") if summary.get("old_layout") else "",
            "<table class=sum><tr><th>Result</th><th>Files</th><th>What it means</th></tr>"]
     for g in ORDER:
         if counts.get(g):
@@ -40,6 +43,8 @@ def write_html(path: Path, summary: dict, rows: list[dict]) -> None:
     for r in sorted(rows, key=lambda r: (ORDER.index(r["grade"]), r["folder"], r["name"])):
         grade = r["grade"] + (f" ({r['percent']:.0f}%)" if r["grade"] in ("Partial", "Needs review") and r["percent"] else "")
         where = f"<br><small>{e(r['saved_as'])}</small>" if r["saved_as"] else ""
+        if r.get("filled_as"):
+            where += f"<br><small>with the rest filled in from its preview: {e(r['filled_as'])}</small>"
         out.append(f"<tr><td>{e(r['name'])}{where}</td><td class=g{ORDER.index(r['grade'])}>{e(grade)}</td>"
                    f"<td>{e(r['method'])}</td><td>{e(r['note'])}</td></tr>")
     out.append("</table>")
