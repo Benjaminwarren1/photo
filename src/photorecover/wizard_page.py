@@ -82,7 +82,8 @@ const views={
   <p class="soft">${size(c.done||0)} of ${size(c.total||0)}${left!==null&&left>0?` · about ${left} min left`:""}${c.bad_bytes?` · ${size(c.bad_bytes)} could not be read and was skipped`:""}</p>`;},
  recovering(){steps(4);return `<h1>Recovering your photos</h1>
   <p><b>You can unplug the card now.</b> Everything from here uses the copy.</p>
-  <progress></progress><p class="soft">${esc((S.log||[]).slice(-1)[0]||"Starting")}</p>`;},
+  ${S.progress&&S.progress.total?`<progress max="${S.progress.total}" value="${S.progress.done}"></progress>`:`<progress></progress>`}
+  <p class="soft">${esc((S.log||[]).slice(-1)[0]||"Starting")}${S.progress&&S.progress.total?` · ${S.progress.done} of ${S.progress.total} done`:""}</p>`;},
  done(){steps(5);const c=(S.summary||{}).counts||{};
   const rows=[["Verified","recovered and fully checked"],["Complete, no preview","recovered, complete"],["Recovered, unverified","recovered, but this file type can't be checked"],["Partial","partly recovered; the rest is not on the card"],["Needs review","close calls that need a person to decide"],["Not recoverable","could not be recovered"]]
    .filter(r=>c[r[0]]).map(r=>`<tr><td class="n">${c[r[0]]}</td><td>${r[1]}</td></tr>`).join("");

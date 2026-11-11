@@ -44,6 +44,7 @@ class Session:
         self.summary: dict | None = None
         self.clone_info: dict = {}
         self.rec: Recovery | None = None
+        self.running: Recovery | None = None
 
     def review_next(self) -> dict | None:
         """The next close call for a person to decide, with pictures as data URLs."""
@@ -144,6 +145,7 @@ class Session:
         def work():
             try:
                 rec = Recovery(self.image, out, lambda m: self.log.append(m))
+                self.running = rec
                 self.summary = rec.run()
                 self.rec = rec
                 self.step = "done"
@@ -168,6 +170,9 @@ class Session:
                 s["clone"] = self.clone_info
             if self.step in ("recovering", "done"):
                 s["log"] = self.log[-6:]
+                prog = self.running.progress if (self.step == "recovering" and self.running) else None
+                if prog:
+                    s["progress"] = dict(done=prog[0], total=prog[1])
                 s["clone"] = dict(bad_bytes=self.clone_info.get("bad_bytes", 0))
             if self.step == "done":
                 s["summary"] = self.summary

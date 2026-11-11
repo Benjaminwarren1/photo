@@ -215,11 +215,17 @@ class Recovery:
     def __init__(self, image, out_dir=None, log=None):
         self.vol = open_volume(image)
         self.out = Path(out_dir) if out_dir else None
-        self.log = log or (lambda msg: None)
+        say = log or (lambda msg: None)
+
+        def _log(msg):               # a new step starts: the count within the old one no longer applies
+            self.progress = None
+            say(msg)
+        self.log = _log
         self.items: list[Item] = []
         self.summary: dict = {}
         self.problems: list[str] = []
         self.always_ask = False
+        self.progress: tuple[int, int] | None = None     # (done, total) within the current step
 
     # ---- helpers ----------------------------------------------------------
     def _resolve_start(self, e: Entry, ext: str) -> int:
@@ -308,7 +314,8 @@ class Recovery:
         self.log(f"Checking {len(jpegs)} photos")
         pending: list[Item] = []
         loose: list[tuple[Item, Result]] = []
-        for it in jpegs:
+        for k, it in enumerate(jpegs):
+            self.progress = (k, len(jpegs))
             hint = it._hint
             r = attempt(it, rb.prove_chain, hint, it.size) if hint else None
             if r is not None:
@@ -337,7 +344,8 @@ class Recovery:
         videos = [i for i in others if i.name.rpartition(".")[2].lower() in CONTAINERS and not i._hint]
         if videos:
             self.log(f"Checking {len(videos)} videos")
-        for it in videos:
+        for k, it in enumerate(videos):
+            self.progress = (k, len(videos))
             v = attempt(it, vr.rebuild, it.start, it.size)
             if v is None:
                 continue
@@ -397,7 +405,8 @@ class Recovery:
             self.log(f"Rebuilding {len(pending)} photos that are stored in pieces")
         for rnd in range(2):
             still = []
-            for it in pending:
+            for k, it in enumerate(pending):
+                self.progress = (k, len(pending))
                 r = attempt(it, rb.rebuild, it.start, it.size)
                 if r is None:
                     continue
@@ -413,6 +422,8 @@ class Recovery:
             if len(still) == len(pending):
                 break
             pending = still
+            if rnd == 0 and pending:
+                self.log(f"Second look at {len(pending)} photos, now that the others are out of the way")
         for it in pending:
             r: Result = it._last
             it.chain, it.percent, it.picks = r.chain, r.percent, r.picks
@@ -436,7 +447,8 @@ class Recovery:
         if heads:
             self.log(f"Looking at {len(heads)} photo starts that have no folder entry")
         n_found = 0
-        for c in heads:
+        for k, c in enumerate(heads):
+            self.progress = (k, len(heads))
             if not avail[c]:
                 continue
             r = attempt(None, rb.rebuild, c, None)
@@ -452,6 +464,7 @@ class Recovery:
         self.items = items
         self._rb, self._avail = rb, avail
         self._deliver()
+        self.progress = None
         self.summary = dict(tool=f"photorecover {__version__}", filesystem=vol.kind,
                             cluster_size=cl, clusters=vol.ncl, card_in_use=round(float(used_fraction), 3),
                             files_listed=len(items), counts=self._counts(), seconds=round(time.time() - t0, 1),
