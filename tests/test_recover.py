@@ -139,3 +139,49 @@ def test_exfat_fragmented_video_follows_surviving_chain(tmp_path):
     it = next(i for i in rec.items if i.name == "CLIP.MP4")
     assert it.grade == "Verified"
     assert (tmp_path / "out" / it.saved_as).read_bytes() == video
+
+
+@pytest.mark.parametrize("moov_first", [False, True])
+def test_fragmented_videos_on_fat(tmp_path, moov_first):
+    """FAT wipes a deleted file's chain, so videos are rebuilt from their own index."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    from photorecover.synth.videos import make_video
+    b = FatBuilder(96, 16, 16384)
+    for i in range(16):
+        b.write(f"DCIM/IMG_{i:04d}.JPG", make_photo(700 + i, 1024, 768))
+    for i in range(1, 16, 2):
+        b.delete(f"DCIM/IMG_{i:04d}.JPG")
+    b.next_free = 2
+    clips = {f"DCIM/VID_{i:04d}.MP4": make_video(40 + i, frames=90 + 30 * i, moov_first=moov_first) for i in range(3)}
+    assert sum(b.write(name, data).fragmented for name, data in clips.items()) >= 2
+    b.delete_all()
+    rec = run(tmp_path, b)
+    check(rec, b, tmp_path, expect_all_recoverable=False)
+    for name, data in clips.items():
+        it = next(i for i in rec.items if i.size == len(data))
+        assert it.grade == "Verified", (it.name, it.grade, it.note)
+        assert (tmp_path / "out" / it.saved_as).read_bytes() == data
+
+
+def test_video_with_sparse_checkpoints_is_never_wrongly_verified(tmp_path):
+    """Big frames and no sound leave clusters with nothing to check. The tool may then be
+    unsure where two pieces join, but it must say so rather than call the video verified."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    from photorecover.synth.videos import make_video
+    b = FatBuilder(96, 16, 4096)
+    for i in range(16):
+        b.write(f"DCIM/IMG_{i:04d}.JPG", make_photo(800 + i, 1024, 768))
+    for i in range(1, 16, 2):
+        b.delete(f"DCIM/IMG_{i:04d}.JPG")
+    b.next_free = 2
+    clips = [make_video(60 + i, frames=60, mean_frame=30000, audio=False) for i in range(2)]
+    for i, data in enumerate(clips):
+        b.write(f"DCIM/VID_{i}.MP4", data)
+    b.delete_all()
+    rec = run(tmp_path, b)
+    for data in clips:
+        it = next(i for i in rec.items if i.size == len(data))
+        if it.grade == "Verified":
+            assert (tmp_path / "out" / it.saved_as).read_bytes() == data

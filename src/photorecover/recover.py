@@ -19,6 +19,7 @@ from PIL import Image
 from . import __version__, jpeg
 from .fat import Entry, open_volume
 from .rebuild import Judge, Rebuilder, Result
+from .video import CONTAINERS, VideoRebuilder
 
 JPEG_EXT = {"jpg", "jpeg", "jpe"}
 SIGNATURES = {            # extension -> bytes a file of that type starts with (offset, magic)
@@ -239,8 +240,37 @@ class Recovery:
             else:
                 pending.append(it)
 
+        # Videos: every frame and audio packet listed in the video's index is a checkpoint.
+        vr = VideoRebuilder(vol, avail)
+        videos = [i for i in others if i.name.rpartition(".")[2].lower() in CONTAINERS and not i._hint]
+        if videos:
+            self.log(f"Checking {len(videos)} videos")
+        for it in videos:
+            v = vr.rebuild(it.start, it.size)
+            if v.status == "failed":
+                it.note = v.reason
+                continue
+            it.chain = v.chain
+            it.percent = round(100.0 * (len(v.chain) - v.missing) / max(1, len(v.chain)), 1)
+            real = [c for c in v.chain if c >= 0]
+            pieces = 1 + sum(1 for a, b in zip(real, real[1:]) if b != a + 1)
+            it.method = "found whole" if pieces == 1 and not v.missing else f"rebuilt from {pieces} pieces"
+            if v.status == "complete":
+                it.grade = GRADE_VERIFIED
+                it.note = f"all {v.checked} frame and sound checkpoints match"
+                if v.uncertain_joins:
+                    it.grade = GRADE_UNVERIFIED
+                    it.note += ("; but a join between two pieces could not be placed exactly, "
+                                "so watch it through for a brief glitch")
+                claim(real)
+            else:
+                it.grade, it.note = GRADE_PARTIAL, v.reason + "; the gaps are left blank and will show as glitches"
+        done_videos = {id(i) for i in videos if i.chain}
+
         # Other file types that are whole.
         for it in others:
+            if id(it) in done_videos:
+                continue
             n = -(-it.size // cl)
             if not vol.valid(it.start) or it.start + n - 1 > vol.max_cluster:
                 it.note = "start cluster is outside the card"
@@ -368,7 +398,10 @@ class Recovery:
         for it in self.items:
             if not it.chain:
                 continue
-            data = vol.read_chain(it.chain, it.size if it.percent == 100.0 else None)
+            if -1 in it.chain:       # a video with pieces missing: blank where the card has nothing
+                data = b"".join(bytes(vol.cl) if c < 0 else bytes(vol.cluster(c)) for c in it.chain)[:it.size]
+            else:
+                data = vol.read_chain(it.chain, it.size if (it.percent == 100.0 or it.kind != "jpeg") else None)
             if it.kind == "jpeg" and it.percent == 100.0 and it.grade in (GRADE_VERIFIED, GRADE_NO_PREVIEW):
                 ok, note, _ = audit_jpeg(data)
                 if not ok:
