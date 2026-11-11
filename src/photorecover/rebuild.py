@@ -31,6 +31,9 @@ BRANCHES = 24            # contenders followed to the end at an uncertain join
 BRANCHES_NO_PREVIEW = 96
 MAX_SEARCHES = 200       # whole-card searches allowed for one photo
 MAX_HEADER = 4 * 1024 * 1024
+SCREEN_MCUS = 32         # a whole-card search first looks at this many MCUs of every candidate
+SCREEN_KEEP = 300        # ... and only the best-looking go on to be decoded in full
+SCREEN_SURE = 100        # this many always do, however poor they look
 
 
 class Judge:
@@ -102,6 +105,38 @@ class Judge:
         if (~from_prev).any():
             above[~from_prev] = mean_new[idx[~from_prev] - m0]
         return float(np.abs(mean_new - above).mean())
+
+
+    def screen_scores(self, prev: np.ndarray, dc: np.ndarray, m0: int) -> np.ndarray | None:
+        """The same judgement as preview_score (or seam_score when there is no preview),
+        for many candidates at once: dc is [candidates, n, blocks]. None if it cannot be judged."""
+        k, n, _ = dc.shape
+        if n < MIN_MCUS or not k:
+            return None
+        x = dc.astype(np.float32) * self.q + 128.0
+        ny = self.ny
+        if self.target is not None:
+            y = self.target[m0:m0 + n]
+            if len(y) < n:
+                return None
+            xl, yl = x[:, :, :ny].reshape(k, -1), y[:, :ny].ravel()
+            if self.mono:
+                cm = np.abs(xl - yl).mean(axis=1)
+            else:
+                cm = np.abs(x[:, :, ny:] - y[None, :, ny:]).reshape(k, -1).mean(axis=1)
+            pen = np.zeros(k, np.float32)
+            if yl.std() > 6:
+                a, b = xl - xl.mean(axis=1, keepdims=True), yl - yl.mean()
+                cc = (a * b).sum(axis=1) / np.sqrt((a * a).sum(axis=1) * (b * b).sum() + 1e-6)
+                pen = 8.0 * np.maximum(0.0, 0.85 - cc)
+            return cm + pen
+        X = self.X
+        if m0 < X or n > X:
+            return None
+        pv = self.values(prev[m0 - X:m0 - X + n])
+        above = np.concatenate([pv[:, :ny].mean(axis=1, keepdims=True), pv[:, ny:]], axis=1)
+        new = np.concatenate([x[:, :, :ny].mean(axis=2, keepdims=True), x[:, :, ny:]], axis=2)
+        return np.abs(new - above[None]).reshape(k, -1).mean(axis=1)
 
 
 def limit(scores: list[float], floor: float) -> float:
@@ -290,8 +325,23 @@ class Rebuilder:
                 cand = cand[~np.isin(cand, np.fromiter(w.used, np.int64, len(w.used)))]
                 if last:
                     # the end marker has to sit exactly where the recorded size puts it
-                    cand = np.array([c for c in cand if vol.cluster(int(c))[end_off:end_off + 2] == b"\xff\xd9"],
-                                    np.int64)
+                    if end_off + 2 <= cl:
+                        at = vol.data_off + (cand.astype(np.int64) - 2) * cl + end_off
+                        raw = np.frombuffer(vol.m, np.uint8)
+                        cand = cand[(raw[at] == 0xFF) & (raw[at + 1] == 0xD9)]
+                    else:
+                        cand = cand[:0]
+                elif len(cand) > 2 * SCREEN_KEEP:
+                    # A whole card is far too much to decode in full for every join. Look at the
+                    # first few blocks of each candidate, and carry on with the best-looking only.
+                    full, dcs, short = w.stream.screen_many(vol.m, vol.data_off, cl, cand, SCREEN_MCUS)
+                    sc = judge.screen_scores(w.stream.dc, dcs, m0)
+                    if sc is not None:
+                        order = np.argsort(sc, kind="stable")[:SCREEN_KEEP]
+                        # beyond the first hundred, only those that could still be credible
+                        ok = (np.arange(len(order)) < SCREEN_SURE) | (sc[order] <= 2 * CEILING * lim_of(w))
+                        keep = full[order[ok]]
+                        cand = np.sort(np.concatenate([keep, short]))
                 found: list[tuple[float, int]] = []
                 for c, status, dcv in w.stream.probe_many(vol.m, vol.data_off, cl, cand, last):
                     ps, ss = assess(w, dcv, m0)

@@ -8,7 +8,9 @@ valid JPEG.
 from __future__ import annotations
 
 import io
+import os
 import struct
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -338,6 +340,28 @@ class Stream:
                                self.carry, st, self.info.spec, 1 if want_done else 0)
         b = self.info.blocks_per_mcu
         return [(c, status, np.frombuffer(dc, np.int16).reshape(n, b)) for c, status, n, dc in res]
+
+    def screen_many(self, image, data_off: int, cl: int, clusters: np.ndarray, n_mcus: int):
+        """A fast first look: the first n_mcus MCUs each cluster would add. Returns
+        (clusters that gave that many, their DC values [k, n_mcus, blocks], clusters that
+        decode cleanly but give fewer). Work is shared between processor cores."""
+        st = STATE.pack(0, *STATE.unpack(self.state)[1:])
+        clusters = np.ascontiguousarray(clusters, "<i8")
+        b = self.info.blocks_per_mcu
+
+        def part(cs):
+            return _impl.screen_many(image, data_off, cl, cs.tobytes(), self.carry, st, self.info.spec, n_mcus)
+
+        workers = min(8, os.cpu_count() or 1) if HAVE_C and len(clusters) >= 2048 else 1
+        if workers > 1:
+            with ThreadPoolExecutor(workers) as ex:
+                parts = list(ex.map(part, np.array_split(clusters, workers)))
+        else:
+            parts = [part(clusters)]
+        full = np.concatenate([np.frombuffer(p[0], "<i8") for p in parts])
+        dc = np.concatenate([np.frombuffer(p[1], np.int16) for p in parts]).reshape(len(full), n_mcus, b)
+        short = np.concatenate([np.frombuffer(p[2], "<i8") for p in parts])
+        return full, dc, short
 
     def end_offset(self) -> int | None:
         """Once DONE: offset (relative to data_off) just past the end marker, or None

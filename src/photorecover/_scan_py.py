@@ -161,3 +161,22 @@ def probe_many(image, data_off: int, cl: int, clusters: bytes, carry: bytes, sta
             continue
         out.append((c, status, n, dc))
     return out
+
+
+def screen_many(image, data_off: int, cl: int, clusters: bytes, carry: bytes, state: bytes, spec: bytes, n_mcus: int):
+    full, dcs, short = [], [], []
+    st = STATE.pack(0, *STATE.unpack(state)[1:])
+    total, mcu = SPEC_HEAD.unpack_from(spec, 0)[18], STATE.unpack(state)[7]
+    for (c,) in struct.iter_unpack("<q", clusters):
+        o = data_off + (c - 2) * cl
+        if c < 2 or o + cl > len(image):
+            continue
+        status, n, dc, _, _ = decode(bytes(carry) + bytes(image[o:o + cl]), st, spec, min(n_mcus, total - mcu))
+        if status == ST_ERROR:
+            continue
+        if n == n_mcus:
+            full.append(c)
+            dcs.append(dc)
+        else:
+            short.append(c)
+    return struct.pack(f"<{len(full)}q", *full), b"".join(dcs), struct.pack(f"<{len(short)}q", *short)

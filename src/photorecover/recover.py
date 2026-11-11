@@ -403,6 +403,7 @@ class Recovery:
         # the others from having to consider its clusters.
         if pending:
             self.log(f"Rebuilding {len(pending)} photos that are stored in pieces")
+        tried = {it.start for it in pending}
         for rnd in range(2):
             still = []
             for k, it in enumerate(pending):
@@ -443,7 +444,8 @@ class Recovery:
                 it.note = "its space was reused by a later file"
 
         # Pass 3: photos with no folder entry left at all.
-        heads = [int(c) for c in np.flatnonzero(avail) if vol.cluster(int(c))[:3] == b"\xff\xd8\xff"]
+        heads = [int(c) for c in np.flatnonzero(avail) if vol.cluster(int(c))[:3] == b"\xff\xd8\xff"
+                 and int(c) not in tried]       # a listed photo that could not be finished is not looked at again
         if heads:
             self.log(f"Looking at {len(heads)} photo starts that have no folder entry")
         n_found = 0

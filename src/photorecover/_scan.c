@@ -327,11 +327,88 @@ cleanup:
     return result;
 }
 
+/* A fast first look at many candidate clusters: decode only the first n_mcus MCUs of each.
+ * screen_many(image, data_off, cluster_size, clusters_int64, carry, state, spec, n_mcus)
+ * Returns (full_ids, dc, short_ids): full_ids (int64 bytes) decoded n_mcus MCUs cleanly and
+ * their DC values follow in dc, n_mcus * blocks int16 each; short_ids decoded cleanly but
+ * yielded fewer MCUs (the picture ends, or the cluster does). Candidates that stop being
+ * valid JPEG are dropped. Runs without the interpreter lock. */
+static PyObject *scan_screen_many(PyObject *self, PyObject *args) {
+    Py_buffer image, clusters, carry, statebuf, specbuf;
+    long long data_off, cl;
+    int n_mcus;
+    if (!PyArg_ParseTuple(args, "y*LLy*y*y*y*i", &image, &data_off, &cl, &clusters, &carry, &statebuf, &specbuf, &n_mcus))
+        return NULL;
+    PyObject *result = NULL;
+    uint8_t *buf = NULL;
+    int16_t *out = NULL, *dcs = NULL;
+    int64_t *full = NULL, *shrt = NULL;
+    Py_ssize_t n = clusters.len / 8, i, nfull = 0, nshort = 0;
+    Spec *S = (Spec *)PyMem_Malloc(sizeof(Spec));
+    if (!S) { PyErr_NoMemory(); goto cleanup; }
+    if (parse_spec(S, (const uint8_t *)specbuf.buf, specbuf.len) < 0) goto cleanup;
+    if (statebuf.len != (Py_ssize_t)sizeof(State) || cl <= 0 || data_off < 0 || n_mcus < 1 || n_mcus > 4096) {
+        PyErr_SetString(PyExc_ValueError, "bad arguments"); goto cleanup;
+    }
+    State s0;
+    memcpy(&s0, statebuf.buf, sizeof(State));
+    s0.pos = 0;
+    if (s0.left < 0 || s0.left > 7) { PyErr_SetString(PyExc_ValueError, "bad state"); goto cleanup; }
+    Py_ssize_t blen = carry.len + (Py_ssize_t)cl;
+    size_t per = (size_t)n_mcus * S->blocks_per_mcu;
+    buf = (uint8_t *)PyMem_Malloc((size_t)blen);
+    out = (int16_t *)PyMem_Malloc((per + S->blocks_per_mcu) * sizeof(int16_t));
+    dcs = (int16_t *)PyMem_Malloc((size_t)(n ? n : 1) * per * sizeof(int16_t));
+    full = (int64_t *)PyMem_Malloc((size_t)(n ? n : 1) * sizeof(int64_t));
+    shrt = (int64_t *)PyMem_Malloc((size_t)(n ? n : 1) * sizeof(int64_t));
+    if (!buf || !out || !dcs || !full || !shrt) { PyErr_NoMemory(); goto cleanup; }
+    memcpy(buf, carry.buf, (size_t)carry.len);
+    const int64_t *cs = (const int64_t *)clusters.buf;
+    const uint8_t *img = (const uint8_t *)image.buf;
+    Py_ssize_t ilen = image.len, clen = carry.len;
+    Py_BEGIN_ALLOW_THREADS
+    for (i = 0; i < n; i++) {
+        int64_t c = cs[i];
+        int64_t o = data_off + (c - 2) * cl;
+        if (c < 2 || o < 0 || o + cl > ilen) continue;
+        memcpy(buf + clen, img + o, (size_t)cl);
+        Reader r;
+        r.d = buf; r.end = blen; r.eod = r.marker = 0; r.s = s0;
+        int status, err;
+        int64_t todo = S->total - r.s.mcu;
+        if (todo > n_mcus) todo = n_mcus;
+        int64_t done = run(&r, S, out, todo, &status, &err);
+        if (status == ST_ERROR) continue;
+        if (done == n_mcus) {
+            memcpy(dcs + (size_t)nfull * per, out, per * sizeof(int16_t));
+            full[nfull++] = c;
+        } else {
+            shrt[nshort++] = c;
+        }
+    }
+    Py_END_ALLOW_THREADS
+    result = Py_BuildValue("(y#y#y#)", (const char *)full, (Py_ssize_t)(nfull * sizeof(int64_t)),
+                           (const char *)dcs, (Py_ssize_t)((size_t)nfull * per * sizeof(int16_t)),
+                           (const char *)shrt, (Py_ssize_t)(nshort * sizeof(int64_t)));
+cleanup:
+    if (buf) PyMem_Free(buf);
+    if (out) PyMem_Free(out);
+    if (dcs) PyMem_Free(dcs);
+    if (full) PyMem_Free(full);
+    if (shrt) PyMem_Free(shrt);
+    if (S) PyMem_Free(S);
+    PyBuffer_Release(&image); PyBuffer_Release(&clusters); PyBuffer_Release(&carry);
+    PyBuffer_Release(&statebuf); PyBuffer_Release(&specbuf);
+    return result;
+}
+
 static PyMethodDef methods[] = {
     {"decode", scan_decode, METH_VARARGS,
      "decode(data, state, spec, max_mcus) -> (status, mcus, dc_int16_bytes, state, error)"},
     {"probe_many", scan_probe_many, METH_VARARGS,
      "probe_many(image, data_off, cluster_size, clusters, carry, state, spec, want) -> [(cluster, status, mcus, dc)]"},
+    {"screen_many", scan_screen_many, METH_VARARGS,
+     "screen_many(image, data_off, cluster_size, clusters, carry, state, spec, n_mcus) -> (full_ids, dc, short_ids)"},
     {NULL, NULL, 0, NULL}
 };
 
