@@ -92,8 +92,8 @@ const views={
   ${S.to_review?`<div class="note"><b>${S.to_review} photo${S.to_review>1?"s":""} need your eye.</b> The program found more than one piece of the card that could come next and would rather ask than guess. <button style="margin-left:.5rem" onclick="review()">Decide now</button></div>`:""}
   <div class="actions"><button class="go" onclick="api('open',{what:'folder'})">Open the folder</button><button onclick="api('open',{what:'report'})">See the full report</button><button onclick="api('restart')">Recover another card</button></div>`;},
  image(){steps(3);return `<h1>Choose the card image</h1><p>A raw copy of a card, usually a .img or .dd file.</p>
-  <div class="row"><input type="text" id="img" aria-label="Path of the image file" placeholder="C:\\…\\card.img"><button onclick="pick('file')">Choose…</button></div>
-  ${S&&S.message?err():""}<div class="actions"><button class="go" onclick="api('use_image',{path:document.getElementById('img').value})">Recover from this file</button><button onclick="go('start')">Back</button></div>`;},
+  <div class="row"><input type="text" id="img" aria-label="Path of the image file" placeholder="for example C:\\Users\\you\\Desktop\\card.img" value="${esc(imgPath)}" oninput="imgPath=this.value"><button onclick="pick('file')">Choose…</button></div>
+  ${S&&S.message?err():""}<div class="actions"><button class="go" onclick="api('use_image',{path:imgPath})">Recover from this file</button><button onclick="go('start')">Back</button></div>`;},
  review(){steps(5);const r=R;
   return `<h1>Which one looks right?</h1>
   <p><b>${esc(r.name)}</b> is ${Math.round(r.percent)}% rebuilt. Each picture below shows the photo around the dashed line, continued with a different piece of the card. Pick the one where the picture carries on properly below the line.</p>
@@ -104,12 +104,12 @@ const views={
  error(){steps(0);return `<h1>That didn't work</h1><p>${esc(S.message)}</p><p class="soft">Your card has not been changed.</p>
   <div class="actions"><button class="go" onclick="api('restart')">Start again</button></div>`;}
 };
-let local=null, R=null;
+let local=null, R=null, imgPath="";
 async function review(){const j=await api("review_next"); R=j.review; local=R?"review":null; render();}
 async function pickPiece(index,cluster){V.style.opacity=.5; const j=await api("review_pick",{index,cluster}); V.style.opacity=1; R=j.review; local=R?"review":null; render();}
 function go(v){local=v; if(S)S.message=""; render();}
 async function pick(kind){const j=await api("pick",{kind}); if(!j.path)return;
-  if(kind==="folder"){folderEdit=j.path; await api("set_folder",{folder:j.path});} else document.getElementById("img").value=j.path;}
+  if(kind==="folder"){folderEdit=j.path; await api("set_folder",{folder:j.path});} else {imgPath=j.path; if(S)S.message=""; render();}}
 function render(){
   if(!S)return; document.getElementById("ver").textContent="version "+S.version;
   let v=S.step; if((v==="start"||(v==="done"&&local==="review"))&&local)v=local; else if(v!=="start")local=null;

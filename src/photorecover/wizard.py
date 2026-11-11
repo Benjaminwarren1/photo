@@ -113,9 +113,13 @@ class Session:
         self.step, self.message = "cloning", ""
 
     def use_image(self, path: str):
-        p = Path(path.strip().strip('"'))
+        shown = path.strip().strip('"')
+        if not shown:
+            self.message = "Choose the file first: press Choose…, or paste its full path into the box."
+            return
+        p = Path(shown)
         if not p.is_file():
-            self.message = "That file could not be found."
+            self.message = f"There is no file at {shown}. Check the path, or press Choose… to pick it."
             return
         self.image = p
         self.folder = p.with_name(p.stem + " recovered")
@@ -234,6 +238,8 @@ def make_server(session: Session, token: str, port: int = 0) -> ThreadingHTTPSer
             extra = {}
             if a == "pick":
                 extra["path"] = pick_path("folder" if body.get("kind") == "folder" else "file")
+                if extra["path"]:
+                    session.message = ""        # whatever was wrong before, a fresh choice starts clean
             else:
                 with session.lock:
                     if a == "begin_card":
