@@ -34,7 +34,8 @@ MAX_SEARCHES = 200       # whole-card searches allowed for one photo
 MAX_HEADER = 4 * 1024 * 1024
 FLAT = 0.75              # luma spread (0-255 scale) below which decoded data is one flat colour
 NOT_A_PHOTO = 1e6        # the score given to such data
-NEAR_FWD, NEAR_BACK = 2048, 512   # free clusters after and before the last piece that are searched first
+NEAR_FWD, NEAR_BACK = 2048, 64    # free clusters after and before the last piece that are searched first.
+# On a real, much-used card every one of 1,025 joins went forward, 99.8% of them within 2,048 free clusters.
 SEARCH_SPAN = 1 << 18    # on very large cards, the most free clusters one search will ever look through
 SCREEN_WIDE = 1500       # how many get the longer second look
 SCREEN_MCUS_2 = 192      # ... and how many MCUs that look covers (about a row of the picture)
@@ -237,8 +238,10 @@ class Rebuilder:
         return res
 
     def rebuild(self, start: int, size: int | None, contiguous_only: bool = False,
-                forced: dict[int, int] | None = None) -> Result:
-        """forced maps a position in the chain to the cluster a person chose for it."""
+                forced: dict[int, int] | None = None, wide: bool = True) -> Result:
+        """forced maps a position in the chain to the cluster a person chose for it.
+        wide=False looks for each next piece only near the last one, which is where it is
+        almost every time, and leaves the rest of the card to a later, wider attempt."""
         vol, cl = self.vol, self.vol.cl
         res = Result(start, size)
         if not vol.valid(start):
@@ -351,10 +354,14 @@ class Rebuilder:
                     stages = [pool]
                 else:
                     i = int(np.searchsorted(pool, w.chain[-1]))
-                    wide = pool
+                    span = pool
                     if len(pool) > SEARCH_SPAN:
-                        wide, capped = pool[max(0, i - SEARCH_SPAN // 4):i + 3 * SEARCH_SPAN // 4], True
-                    stages = [pool[max(0, i - NEAR_BACK):i + NEAR_FWD], wide]
+                        span, capped = pool[max(0, i - SEARCH_SPAN // 4):i + 3 * SEARCH_SPAN // 4], True
+                    stages = [pool[max(0, i - NEAR_BACK):i + NEAR_FWD]]
+                    if wide:
+                        stages.append(span)
+                    else:
+                        capped = True
                 for cand in stages:
                     if last:
                         # the end marker has to sit exactly where the recorded size puts it

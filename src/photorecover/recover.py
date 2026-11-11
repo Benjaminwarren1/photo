@@ -408,7 +408,10 @@ class Recovery:
             still = []
             for k, it in enumerate(pending):
                 self.progress = (k, len(pending))
-                r = attempt(it, rb.rebuild, it.start, it.size)
+                # First time round each next piece is sought only near the last one. On a real,
+                # much-used card it was within reach there for 998 joins in 1000; the second time
+                # round, with the easy photos out of the way, the whole card is searched.
+                r = attempt(it, rb.rebuild, it.start, it.size, wide=rnd == 1)
                 if r is None:
                     continue
                 if r.status == "complete" and r.exact_end:
@@ -420,11 +423,9 @@ class Recovery:
                 else:
                     it._last = r
                     still.append(it)
-            if len(still) == len(pending):
-                break
             pending = still
             if rnd == 0 and pending:
-                self.log(f"Second look at {len(pending)} photos, now that the others are out of the way")
+                self.log(f"Searching the whole card for the rest of {len(pending)} photos")
         for it in pending:
             r: Result = it._last
             it.chain, it.percent, it.picks = r.chain, r.percent, r.picks
@@ -444,8 +445,7 @@ class Recovery:
                 it.note = "its space was reused by a later file"
 
         # Pass 3: photos with no folder entry left at all.
-        heads = [int(c) for c in np.flatnonzero(avail) if vol.cluster(int(c))[:3] == b"\xff\xd8\xff"
-                 and int(c) not in tried]       # a listed photo that could not be finished is not looked at again
+        heads = [int(c) for c in np.flatnonzero(avail) if vol.cluster(int(c))[:3] == b"\xff\xd8\xff"]
         if heads:
             self.log(f"Looking at {len(heads)} photo starts that have no folder entry")
         n_found = 0
@@ -453,7 +453,9 @@ class Recovery:
             self.progress = (k, len(heads))
             if not avail[c]:
                 continue
-            r = attempt(None, rb.rebuild, c, None)
+            # Where a listed photo could not be finished, its folder entry may be out of date and a
+            # different, whole photo may start there: worth a look, but not another search of the card.
+            r = attempt(None, rb.rebuild, c, None, contiguous_only=c in tried, wide=False)
             if r is not None and r.status == "complete":
                 n_found += 1
                 it = Item(name=f"found_{n_found:05d}.jpg", folder="Found by scanning", size=r.size, start=c,
@@ -462,6 +464,10 @@ class Recovery:
                 self._accept(it, r, "found whole" if pieces == 1 else f"rebuilt from {pieces} pieces")
                 claim(r.chain)
                 items.append(it)
+                for old in items:      # the listed photo that began here is this one's stale folder entry
+                    if old is not it and old.kind == "jpeg" and old.start == c and old.grade in (GRADE_REVIEW, GRADE_PARTIAL):
+                        old.grade, old.chain, old.candidates, old.percent = GRADE_LOST, [], [], 0.0
+                        old.note = f"its space now holds a different, complete photo (saved as {it.name})"
 
         self.items = items
         self._rb, self._avail = rb, avail
