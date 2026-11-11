@@ -20,6 +20,9 @@ CARDS = {
     "no-chroma-subsampling": dict(fat_type=16, cluster_size=8192, size_mb=128, seed=7, subsampling=0, photos=24),
     "letterboxed-preview": dict(fat_type=16, cluster_size=16384, size_mb=128, seed=8, width=1920, height=1080,
                                 letterbox=True),
+    "exfat-32k": dict(fat_type="exfat", cluster_size=32768, size_mb=160, seed=21, width=2048, height=1536),
+    "exfat-128k-chain-wiped": dict(fat_type="exfat", cluster_size=131072, size_mb=256, seed=22, width=2592,
+                                   height=1944, photos=24, clear_fat=True),
     "no-preview": dict(fat_type=16, cluster_size=8192, size_mb=64, seed=5, preview=False),
 }
 
@@ -85,7 +88,7 @@ def test_no_preview_card_never_guesses(tmp_path):
     assert all(g == "Needs review" for _, g, _ in missed)
 
 
-@pytest.mark.parametrize("fat_type", [16, 32])
+@pytest.mark.parametrize("fat_type", [16, 32, "exfat"])
 def test_quick_formatted_card(tmp_path, fat_type):
     b = used_card(fat_type=fat_type, cluster_size=8192, size_mb=96, seed=11)
     b.quick_format()
@@ -113,3 +116,26 @@ def test_report_written(tmp_path):
     run(tmp_path, b)
     html = (tmp_path / "out" / "report.html").read_text()
     assert "Verified" in html and (tmp_path / "out" / "report.json").exists()
+
+
+def test_exfat_fragmented_video_follows_surviving_chain(tmp_path):
+    """exFAT keeps a deleted file's chain, so even a fragmented video comes back whole."""
+    import os
+    import struct
+    from photorecover.synth.exfatbuilder import ExFatBuilder
+    from photorecover.synth.photos import make_photo
+    b = ExFatBuilder(64, 32768)
+    for i in range(4):
+        b.write(f"DCIM/A{i}.JPG", make_photo(900 + i, 800, 600))
+    b.delete("DCIM/A1.JPG")
+    b.next_free = 2
+    body = os.urandom(400_000)
+    video = struct.pack(">I4s4sI4s", 20, b"ftyp", b"isom", 0, b"isom") + struct.pack(">I4s", 8 + len(body), b"mdat") \
+        + body + struct.pack(">I4s", 16, b"moov") + bytes(8)
+    t = b.write("DCIM/CLIP.MP4", video)
+    assert t.fragmented
+    b.delete_all()
+    rec = run(tmp_path, b)
+    it = next(i for i in rec.items if i.name == "CLIP.MP4")
+    assert it.grade == "Verified"
+    assert (tmp_path / "out" / it.saved_as).read_bytes() == video

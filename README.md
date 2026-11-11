@@ -3,8 +3,8 @@
 A free tool for rescuing deleted photos from memory cards. It avoids the "grey box" that other recovery
 tools leave when a photo was stored on the card in more than one piece.
 
-**Status: early development.** The recovery engine works on FAT16 and FAT32 card images from the command
-line. The Windows wizard, exFAT and video rebuilding are still to come.
+**Status: early development.** The recovery engine works on FAT16, FAT32 and exFAT card images from the command
+line. The Windows wizard and video rebuilding are still to come.
 
 ## Why it is different
 

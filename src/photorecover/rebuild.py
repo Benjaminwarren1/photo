@@ -157,6 +157,28 @@ class Rebuilder:
             c += 1
         return None
 
+    def prove_chain(self, chain: list[int], size: int) -> Result | None:
+        """Check a chain suggested by the file system (exFAT keeps a deleted file's
+        chain). Returns a complete Result only if the photo decodes exactly along it."""
+        vol = self.vol
+        if not chain or not all(vol.valid(c) and self.avail[c] for c in chain):
+            return None
+        data = vol.read_chain(chain, size)
+        try:
+            info = jpeg.parse_header(data)
+        except (jpeg.NotJpeg, jpeg.HeaderIncomplete):
+            return None
+        if not info.supported:
+            return None
+        st = jpeg.Stream(info)
+        st.feed(data[info.data_off:])
+        if st.status != ST_DONE or st.end_offset() is None or info.data_off + st.end_offset() != size:
+            return None
+        res = Result(chain[0], size, chain=list(chain), status="complete", percent=100.0, info=info)
+        res.has_preview = jpeg.decode_thumb(info) is not None
+        res.image_bytes = size
+        return res
+
     def rebuild(self, start: int, size: int | None, contiguous_only: bool = False) -> Result:
         vol, cl = self.vol, self.vol.cl
         res = Result(start, size)

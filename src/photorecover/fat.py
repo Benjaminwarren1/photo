@@ -32,6 +32,7 @@ class Entry:
     live: bool = False        # reachable from the root through intact FAT chains
     path: str = ""            # folder path, best effort
     mtime: tuple | None = None
+    contiguous: bool = False  # exFAT only: recorded as one unbroken run
 
     @property
     def ext(self) -> str:
@@ -105,6 +106,13 @@ class FatVolume:
             fat = np.concatenate([fat, np.zeros(self.ncl + 2 - n, np.uint32)])
         self.fat = fat
         self.eoc = 0xFFF8 if self.fat_bits == 16 else 0x0FFFFFF8
+
+    @property
+    def kind(self) -> str:
+        return f"FAT{self.fat_bits}"
+
+    def hint_chain(self, e: "Entry"):
+        return None          # FAT16/32 wipe a deleted file's chain; there is nothing to go on
 
     # ---- clusters ---------------------------------------------------------
     @property
@@ -314,3 +322,12 @@ class FatVolume:
             if sane_date and lo_ok and e.size < (self.ncl + 1) * self.cl:
                 ok += 1
         return ok == len(ents)
+
+
+def open_volume(source):
+    """Open whatever file system the image holds: FAT16, FAT32 or exFAT."""
+    from .exfat import ExFatVolume, find_exfat
+    m = _open_ro(source) if isinstance(source, (str, Path)) else source
+    if find_exfat(m) is not None:
+        return ExFatVolume(m)
+    return FatVolume(m)

@@ -17,7 +17,7 @@ import numpy as np
 from PIL import Image
 
 from . import __version__, jpeg
-from .fat import Entry, FatVolume
+from .fat import Entry, open_volume
 from .rebuild import Judge, Rebuilder, Result
 
 JPEG_EXT = {"jpg", "jpeg", "jpe"}
@@ -60,6 +60,8 @@ class Item:
     mtime: tuple | None = None
     candidates: list = field(default_factory=list)
     picks: list = field(default_factory=list)
+    _hint = None                    # chain suggested by the file system, if any
+    _last = None                    # last rebuild attempt
 
 
 def _valid_isobmff(data) -> bool:
@@ -145,7 +147,7 @@ def audit_jpeg(data: bytes) -> tuple[bool, str, bool]:
 
 class Recovery:
     def __init__(self, image, out_dir=None, log=None):
-        self.vol = FatVolume(image)
+        self.vol = open_volume(image)
         self.out = Path(out_dir) if out_dir else None
         self.log = log or (lambda msg: None)
         self.items: list[Item] = []
@@ -204,6 +206,7 @@ class Recovery:
             it = Item(name=e.name, folder=e.path, size=e.size, start=start,
                       kind="jpeg" if ext in JPEG_EXT else "other",
                       source="deleted entry" if e.deleted else "lost folder entry", mtime=e.mtime)
+            it._hint = vol.hint_chain(e)
             if key not in seen or (seen[key].name.startswith("_") and not e.name.startswith("_")):
                 seen[key] = it
         items = sorted(seen.values(), key=lambda i: i.start)
@@ -215,6 +218,14 @@ class Recovery:
         pending: list[Item] = []
         loose: list[tuple[Item, Result]] = []
         for it in jpegs:
+            hint = it._hint
+            r = rb.prove_chain(hint, it.size) if hint else None
+            if r is not None:
+                pieces = 1 + sum(1 for a, b in zip(hint, hint[1:]) if b != a + 1)
+                self._accept(it, r, "found whole" if pieces == 1 else
+                             f"rebuilt from {pieces} pieces using the card's own record")
+                claim(r.chain)
+                continue
             r = rb.rebuild(it.start, it.size, contiguous_only=True)
             if r.status == "complete" and r.exact_end:
                 self._accept(it, r, "found whole")
@@ -234,11 +245,11 @@ class Recovery:
             if not vol.valid(it.start) or it.start + n - 1 > vol.max_cluster:
                 it.note = "start cluster is outside the card"
                 continue
-            chain = list(range(it.start, it.start + n))
+            chain = it._hint or list(range(it.start, it.start + n))
             if not avail[chain].all():
                 it.note = "its space was reused by another file"
                 continue
-            verdict = check_other(it.name.rpartition(".")[2].lower(), vol.read_run(it.start, it.size))
+            verdict = check_other(it.name.rpartition(".")[2].lower(), vol.read_chain(chain, it.size))
             if verdict is None:
                 it.note = "its space no longer holds this kind of file (overwritten, or stored in pieces)"
                 continue
@@ -312,7 +323,7 @@ class Recovery:
         counts: dict[str, int] = {}
         for it in items:
             counts[it.grade] = counts.get(it.grade, 0) + 1
-        self.summary = dict(tool=f"photorecover {__version__}", filesystem=f"FAT{vol.fat_bits}",
+        self.summary = dict(tool=f"photorecover {__version__}", filesystem=vol.kind,
                             cluster_size=cl, clusters=vol.ncl, card_in_use=round(float(used_fraction), 3),
                             files_listed=len(items), counts=counts, seconds=round(time.time() - t0, 1),
                             fast_decoder=jpeg.HAVE_C)
