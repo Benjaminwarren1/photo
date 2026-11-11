@@ -147,3 +147,17 @@ def decode(data, state: bytes, spec: bytes, max_mcus: int):
         pos, cur, left, pred, mcu, to_restart, next_rst = good
     return (status, done, struct.pack(f"<{len(out)}h", *out),
             STATE.pack(pos, cur, left, *pred, mcu, to_restart, next_rst), err)
+
+
+def probe_many(image, data_off: int, cl: int, clusters: bytes, carry: bytes, state: bytes, spec: bytes, want: int):
+    out = []
+    st = STATE.pack(0, *STATE.unpack(state)[1:])
+    for (c,) in struct.iter_unpack("<q", clusters):
+        o = data_off + (c - 2) * cl
+        if c < 2 or o + cl > len(image):
+            continue
+        status, n, dc, _, _ = decode(bytes(carry) + bytes(image[o:o + cl]), st, spec, -1)
+        if status == ST_ERROR or (want == 1 and status != ST_DONE):
+            continue
+        out.append((c, status, n, dc))
+    return out

@@ -145,6 +145,16 @@ class FatVolume:
         """Boolean per cluster number (index = cluster number): in use according to the FAT."""
         return self.fat != 0
 
+    def blank_clusters(self) -> np.ndarray:
+        """Boolean per cluster number: every byte the same (never-used or erased space)."""
+        out = np.zeros(self.ncl + 2, bool)
+        step = max(1, (64 << 20) // self.cl)
+        for c0 in range(2, self.max_cluster + 1, step):
+            n = min(step, self.max_cluster + 1 - c0)
+            a = np.frombuffer(self.m, np.uint8, n * self.cl, self.data_off + (c0 - 2) * self.cl).reshape(n, self.cl)
+            out[c0:c0 + n] = (a == a[:, :1]).all(axis=1)
+        return out
+
     # ---- directories ------------------------------------------------------
     def parse_dir(self, buf: bytes, where: int) -> tuple[list[Entry], int, int]:
         """Returns (entries, used_slots, bad_slots) for a block of 32-byte slots."""
