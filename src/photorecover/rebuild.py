@@ -34,6 +34,10 @@ MAX_SEARCHES = 200       # whole-card searches allowed for one photo
 MAX_HEADER = 4 * 1024 * 1024
 FLAT = 0.75              # luma spread (0-255 scale) below which decoded data is one flat colour
 NOT_A_PHOTO = 1e6        # the score given to such data
+NEAR_FWD, NEAR_BACK = 2048, 512   # free clusters after and before the last piece that are searched first
+SEARCH_SPAN = 1 << 18    # on very large cards, the most free clusters one search will ever look through
+SCREEN_WIDE = 1500       # how many get the longer second look
+SCREEN_MCUS_2 = 192      # ... and how many MCUs that look covers (about a row of the picture)
 SCREEN_MCUS = 32         # a whole-card search first looks at this many MCUs of every candidate
 SCREEN_KEEP = 300        # ... and only the best-looking go on to be decoded in full
 SCREEN_SURE = 100        # this many always do, however poor they look
@@ -141,12 +145,15 @@ class Judge:
                 sc[xl.std(axis=1) < FLAT] = NOT_A_PHOTO
             return sc
         X = self.X
-        if m0 < X or n > X:
+        if m0 < X:
             return None
-        pv = self.values(prev[m0 - X:m0 - X + n])
+        pv = self.values(prev[m0 - X:m0 - X + min(n, X)])
         above = np.concatenate([pv[:, :ny].mean(axis=1, keepdims=True), pv[:, ny:]], axis=1)
         new = np.concatenate([x[:, :, :ny].mean(axis=2, keepdims=True), x[:, :, ny:]], axis=2)
-        sc = np.abs(new - above[None]).reshape(k, -1).mean(axis=1)
+        jump = np.abs(new[:, :X] - above[None]).reshape(k, -1).sum(axis=1)
+        if n > X:           # past one row, each new MCU sits under another new one
+            jump += np.abs(new[:, X:] - new[:, :n - X]).reshape(k, -1).sum(axis=1)
+        sc = jump / (n * new.shape[2])
         if n >= 2 * MIN_MCUS and above[:, 0].std() > 4 * FLAT:
             sc[new[:, :, 0].std(axis=1) < FLAT] = NOT_A_PHOTO
         return sc
@@ -336,88 +343,113 @@ class Rebuilder:
                 cand = np.flatnonzero(self.avail)
                 cand = cand[cand >= 2]
                 cand = cand[~np.isin(cand, np.fromiter(w.used, np.int64, len(w.used)))]
-                if last:
-                    # the end marker has to sit exactly where the recorded size puts it
-                    if end_off + 2 <= cl:
-                        at = vol.data_off + (cand.astype(np.int64) - 2) * cl + end_off
-                        raw = np.frombuffer(vol.m, np.uint8)
-                        cand = cand[(raw[at] == 0xFF) & (raw[at + 1] == 0xD9)]
-                    else:
-                        cand = cand[:0]
-                elif len(cand) > 2 * SCREEN_KEEP:
-                    # A whole card is far too much to decode in full for every join. Look at the
-                    # first few blocks of each candidate, and carry on with the best-looking only.
-                    full, dcs, short = w.stream.screen_many(vol.m, vol.data_off, cl, cand, SCREEN_MCUS)
-                    sc = judge.screen_scores(w.stream.dc, dcs, m0)
-                    if sc is not None:
-                        order = np.argsort(sc, kind="stable")[:SCREEN_KEEP]
-                        # beyond the first hundred, only those that could still be credible
-                        ok = (np.arange(len(order)) < SCREEN_SURE) | (sc[order] <= 2 * CEILING * lim_of(w))
-                        keep = full[order[ok]]
-                        cand = np.sort(np.concatenate([keep, short]))
-                found: list[tuple[float, int]] = []
-                for c, status, dcv in w.stream.probe_many(vol.m, vol.data_off, cl, cand, last):
-                    ps, ss = assess(w, dcv, m0)
-                    sc = ps if has_preview else ss
-                    found.append((0.0 if sc is None else sc, int(c)))
-                found.sort()
-                # Two places on the card can hold the very same bytes (a photo saved twice).
-                # They are one choice, not two rivals: keep the first of each.
-                seen_bytes: set[bytes] = set()
-                uniq = []
-                for f in found:
-                    piece = vol.cluster(f[1])
-                    if last:                  # what lies after the end of the photo is not part of it
-                        piece = piece[:end_off + 2]
-                    key = hashlib.blake2b(piece, digest_size=12).digest()
-                    if key not in seen_bytes:
-                        seen_bytes.add(key)
-                        uniq.append(f)
-                every, found = found, uniq        # all copies still get a try at finishing the photo
-                ceiling = CEILING * lim_of(w)       # beyond this even the best is not credible
-                plausible = [f for f in found if f[0] <= ceiling]
-                # 1. Proof by completion. Let each contender run on through the free clusters
-                #    that follow it: only a right choice can end with every block decoded and
-                #    the end marker exactly in place. The next free cluster always gets a try.
-                if self.always_ask and not (forced and len(w.chain) in forced):
-                    w.candidates = [(round(sc, 2), c) for sc, c in plausible[:8]]
-                    w.status, w.reason = ("review", "waiting for a person to choose the next piece") if plausible \
-                        else ("partial", "the rest of this photo is not on the card")
-                    return
-                tries = [f for f in every if f[0] <= ceiling][:BRANCHES if has_preview else BRANCHES_NO_PREVIEW]
-                if nx_ok and all(c != nx for _, c in tries):
-                    tries = [next((f for f in every if f[1] == nx), (ceiling, nx))] + tries
-                done = []
-                for sc, c in tries:
-                    b = w.fork()
-                    commit(b, c, vol.cluster(c))
-                    if run_on(b):
-                        dcv = b.stream.dc[m0:b.stream.mcus]
+                # Pieces of a file usually lie near each other, so look nearby first. A nearby piece
+                # is only taken if it goes on to finish the photo exactly, which is proof wherever it
+                # was found; otherwise the search widens to the rest of the card.
+                pool, capped = cand, False
+                if last or self.always_ask or len(pool) <= NEAR_BACK + NEAR_FWD:
+                    stages = [pool]
+                else:
+                    i = int(np.searchsorted(pool, w.chain[-1]))
+                    wide = pool
+                    if len(pool) > SEARCH_SPAN:
+                        wide, capped = pool[max(0, i - SEARCH_SPAN // 4):i + 3 * SEARCH_SPAN // 4], True
+                    stages = [pool[max(0, i - NEAR_BACK):i + NEAR_FWD], wide]
+                for cand in stages:
+                    if last:
+                        # the end marker has to sit exactly where the recorded size puts it
+                        if end_off + 2 <= cl:
+                            at = vol.data_off + (cand.astype(np.int64) - 2) * cl + end_off
+                            raw = np.frombuffer(vol.m, np.uint8)
+                            cand = cand[(raw[at] == 0xFF) & (raw[at + 1] == 0xD9)]
+                        else:
+                            cand = cand[:0]
+                    elif len(cand) > 2 * SCREEN_KEEP:
+                        # A whole card is far too much to decode in full for every join. Look at the
+                        # first few blocks of each candidate, and carry on with the best-looking only.
+                        # First a glance at every candidate, then a longer look at the best of those:
+                        # a glance alone sometimes ranks the true piece too low to get its full check.
+                        full, dcs, short = w.stream.screen_many(vol.m, vol.data_off, cl, cand, SCREEN_MCUS)
+                        sc = judge.screen_scores(w.stream.dc, dcs, m0)
+                        if sc is not None:
+                            shorts = [short]
+                            if SCREEN_KEEP and len(full) > SCREEN_KEEP:
+                                first = np.sort(full[np.argsort(sc, kind="stable")[:SCREEN_WIDE]])
+                                full, dcs, short2 = w.stream.screen_many(vol.m, vol.data_off, cl, first, SCREEN_MCUS_2)
+                                shorts.append(short2)
+                                sc2 = judge.screen_scores(w.stream.dc, dcs, m0)
+                                if sc2 is None:       # too near the end of the picture to judge that far
+                                    full, sc2 = first, None
+                                sc = sc2
+                            if sc is not None:
+                                order = np.argsort(sc, kind="stable")[:SCREEN_KEEP or len(sc)]
+                                # beyond the first hundred, only those that could still be credible
+                                ok = (np.arange(len(order)) < SCREEN_SURE) | (sc[order] <= 2 * CEILING * lim_of(w))
+                                full = full[order[ok]]
+                            cand = np.unique(np.concatenate([full] + shorts))
+                    found: list[tuple[float, int]] = []
+                    for c, status, dcv in w.stream.probe_many(vol.m, vol.data_off, cl, cand, last):
                         ps, ss = assess(w, dcv, m0)
-                        whole = ps if has_preview else ss
-                        done.append((sc if whole is None else whole, c, b))
-                done.sort(key=lambda d: d[0])
-                # ... and two ways of finishing that produce identical bytes are the same photo
-                seen_bytes, uniq = set(), []
-                for d in done:
-                    h = hashlib.blake2b(digest_size=12)
-                    end = d[2].stream.end_offset()
-                    left = (size if size is not None else info.data_off + end) - len(w.chain) * cl
-                    for c in d[2].chain[len(w.chain):]:
-                        h.update(vol.cluster(c)[:max(0, left)])     # only up to the end of the photo
-                        left -= cl
-                    if h.digest() not in seen_bytes:
-                        seen_bytes.add(h.digest())
-                        uniq.append(d)
-                done = uniq
-                if done and done[0][0] <= ceiling and (
-                        len(done) == 1 or done[1][0] >= CLEAR_WIN * max(done[0][0], 0.25)):
-                    sc, c, b = done[0]
-                    if c != nx:
-                        b.picks.insert(len(w.picks), dict(index=len(w.chain), cluster=c, score=round(sc, 2),
-                                                          how="only this choice completes the photo"))
-                    w.__dict__.update(b.__dict__)
-                    return
+                        sc = ps if has_preview else ss
+                        found.append((0.0 if sc is None else sc, int(c)))
+                    found.sort()
+                    # Two places on the card can hold the very same bytes (a photo saved twice).
+                    # They are one choice, not two rivals: keep the first of each.
+                    seen_bytes: set[bytes] = set()
+                    uniq = []
+                    for f in found:
+                        piece = vol.cluster(f[1])
+                        if last:                  # what lies after the end of the photo is not part of it
+                            piece = piece[:end_off + 2]
+                        key = hashlib.blake2b(piece, digest_size=12).digest()
+                        if key not in seen_bytes:
+                            seen_bytes.add(key)
+                            uniq.append(f)
+                    every, found = found, uniq        # all copies still get a try at finishing the photo
+                    ceiling = CEILING * lim_of(w)       # beyond this even the best is not credible
+                    plausible = [f for f in found if f[0] <= ceiling]
+                    # 1. Proof by completion. Let each contender run on through the free clusters
+                    #    that follow it: only a right choice can end with every block decoded and
+                    #    the end marker exactly in place. The next free cluster always gets a try.
+                    if self.always_ask and not (forced and len(w.chain) in forced):
+                        w.candidates = [(round(sc, 2), c) for sc, c in plausible[:8]]
+                        w.status, w.reason = ("review", "waiting for a person to choose the next piece") if plausible \
+                            else ("partial", "the rest of this photo is not on the card")
+                        return
+                    tries = [f for f in every if f[0] <= ceiling][:BRANCHES if has_preview else BRANCHES_NO_PREVIEW]
+                    if nx_ok and all(c != nx for _, c in tries):
+                        tries = [next((f for f in every if f[1] == nx), (ceiling, nx))] + tries
+                    done = []
+                    for sc, c in tries:
+                        b = w.fork()
+                        commit(b, c, vol.cluster(c))
+                        if run_on(b):
+                            dcv = b.stream.dc[m0:b.stream.mcus]
+                            ps, ss = assess(w, dcv, m0)
+                            whole = ps if has_preview else ss
+                            done.append((sc if whole is None else whole, c, b))
+                    done.sort(key=lambda d: d[0])
+                    # ... and two ways of finishing that produce identical bytes are the same photo
+                    seen_bytes, uniq = set(), []
+                    for d in done:
+                        h = hashlib.blake2b(digest_size=12)
+                        end = d[2].stream.end_offset()
+                        left = (size if size is not None else info.data_off + end) - len(w.chain) * cl
+                        for c in d[2].chain[len(w.chain):]:
+                            h.update(vol.cluster(c)[:max(0, left)])     # only up to the end of the photo
+                            left -= cl
+                        if h.digest() not in seen_bytes:
+                            seen_bytes.add(h.digest())
+                            uniq.append(d)
+                    done = uniq
+                    if done and done[0][0] <= ceiling and (
+                            len(done) == 1 or done[1][0] >= CLEAR_WIN * max(done[0][0], 0.25)):
+                        sc, c, b = done[0]
+                        if c != nx:
+                            b.picks.insert(len(w.picks), dict(index=len(w.chain), cluster=c, score=round(sc, 2),
+                                                              how="only this choice completes the photo"))
+                        w.__dict__.update(b.__dict__)
+                        return
                 # 2. A photo in three or more pieces: take a clear best match and carry on.
                 pick = None
                 if last and len(found) == 1:
@@ -433,7 +465,8 @@ class Rebuilder:
                     continue
                 w.candidates = [(round(sc, 2), c) for sc, c in plausible[:8]]
                 if not plausible:
-                    w.status, w.reason = "partial", "the rest of this photo is not on the card"
+                    w.status, w.reason = "partial", ("the rest of this photo was not found anywhere near it"
+                                                     if capped else "the rest of this photo is not on the card")
                 else:
                     w.status, w.reason = "review", "more than one piece of the card could come next"
                 return

@@ -669,11 +669,23 @@ class Recovery:
         from .report import write_html
         rows = [dict(name=i.name, folder=i.folder, grade=i.grade, percent=i.percent, method=i.method, filled_as=i.filled_as,
                      note=i.note, bytes=i.out_bytes, saved_as=i.saved_as, source=i.source,
-                     start_cluster=i.start, clusters=len(i.chain), picks=i.picks, candidates=i.candidates)
+                     start_cluster=i.start, clusters=len(i.chain), picks=i.picks, candidates=i.candidates,
+                     size=i.size, modified=list(i.mtime) if i.mtime else None, runs=_runs(i.chain))
                 for i in self.items]
         self.out.mkdir(parents=True, exist_ok=True)
         (self.out / "report.json").write_text(json.dumps(dict(summary=self.summary, files=rows), indent=1))
         write_html(self.out / "report.html", self.summary, rows)
+
+
+def _runs(chain: list[int]) -> list[list[int]]:
+    """A chain of clusters as [first, count] runs: where on the card the file's pieces were."""
+    out: list[list[int]] = []
+    for c in chain:
+        if out and c >= 0 and out[-1][0] + out[-1][1] == c:
+            out[-1][1] += 1
+        else:
+            out.append([c, 1])
+    return out
 
 
 def _safe(name: str) -> str:
