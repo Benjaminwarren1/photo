@@ -63,6 +63,7 @@ class Item:
     picks: list = field(default_factory=list)
     _hint = None                    # chain suggested by the file system, if any
     _last = None                    # last rebuild attempt
+    _forced: dict = field(default_factory=dict, repr=False)   # choices made by a person: chain index -> cluster
 
 
 def _valid_isobmff(data) -> bool:
@@ -180,6 +181,7 @@ class Recovery:
         self.items: list[Item] = []
         self.summary: dict = {}
         self.problems: list[str] = []
+        self.always_ask = False
 
     # ---- helpers ----------------------------------------------------------
     def _resolve_start(self, e: Entry, ext: str) -> int:
@@ -220,6 +222,7 @@ class Recovery:
         targets = [e for e in entries if not e.live and not e.is_dir and e.size > 0]
         self.log(f"{len(targets)} deleted or lost files listed; {used_fraction:.0%} of the card holds data")
         rb = Rebuilder(vol, avail)
+        rb.always_ask = self.always_ask
         cl = vol.cl
 
         def claim(chain):
@@ -397,17 +400,98 @@ class Recovery:
                 items.append(it)
 
         self.items = items
+        self._rb, self._avail = rb, avail
         self._deliver()
-        counts: dict[str, int] = {}
-        for it in items:
-            counts[it.grade] = counts.get(it.grade, 0) + 1
         self.summary = dict(tool=f"photorecover {__version__}", filesystem=vol.kind,
                             cluster_size=cl, clusters=vol.ncl, card_in_use=round(float(used_fraction), 3),
-                            files_listed=len(items), counts=counts, seconds=round(time.time() - t0, 1),
+                            files_listed=len(items), counts=self._counts(), seconds=round(time.time() - t0, 1),
                             fast_decoder=jpeg.HAVE_C, problems=self.problems[:50])
         if self.out:
             self._write_report()
         return self.summary
+
+    def _counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for it in self.items:
+            counts[it.grade] = counts.get(it.grade, 0) + 1
+        return counts
+
+    # ---- close calls decided by a person (or a program driving the tool) ----
+    def review_queue(self) -> list[int]:
+        """Indexes of photos waiting for someone to choose the next piece."""
+        return [i for i, it in enumerate(self.items)
+                if it.grade == GRADE_REVIEW and it.kind == "jpeg" and it.candidates and it._last is not None]
+
+    def review_images(self, index: int, width: int = 420) -> dict:
+        """For one waiting photo: what each candidate would make the picture look like
+        around the join, as JPEG bytes, plus the photo's own preview if it has one."""
+        from PIL import ImageFile
+        it = self.items[index]
+        r: Result = it._last
+        vol, info = self.vol, r.info
+        rows_done = (r.percent / 100.0) * info.height
+        top = max(0, int(rows_done - info.height * 0.2))
+        bottom = min(info.height, int(rows_done + info.height * 0.3))
+        out = dict(name=it.name, percent=it.percent, candidates=[], preview=None)
+        if info.thumb:
+            out["preview"] = bytes(info.thumb)
+        old = ImageFile.LOAD_TRUNCATED_IMAGES
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        try:
+            for score, c in it.candidates[:6]:
+                chain, used, cc = list(r.chain) + [c], set(r.chain) | {c}, c
+                for _ in range(max(3, -(-(it.size or 0) // vol.cl) // 4)):   # let it run on for a quarter of the photo
+                    cc = self._rb._next_avail(cc, used)
+                    if cc is None:
+                        break
+                    chain.append(cc)
+                    used.add(cc)
+                try:
+                    with Image.open(io.BytesIO(vol.read_chain(chain) + b"\xff\xd9")) as im:
+                        im.draft("RGB", (max(1, im.width // 2), max(1, im.height // 2)))
+                        k = im.height / info.height
+                        im = im.convert("RGB").crop((0, int(top * k), im.width, int(bottom * k)))
+                        im.thumbnail((width, width * 3))
+                        buf = io.BytesIO()
+                        im.save(buf, "JPEG", quality=80)
+                    out["candidates"].append(dict(cluster=c, image=buf.getvalue(), join=(rows_done - top) / (bottom - top)))
+                except Exception:  # noqa: BLE001
+                    continue
+        finally:
+            ImageFile.LOAD_TRUNCATED_IMAGES = old
+        return out
+
+    def review_pick(self, index: int, cluster: int | None) -> str:
+        """Apply a choice. None means "none of these": the photo stays partial.
+        Returns the photo's new grade."""
+        it = self.items[index]
+        r: Result = it._last
+        if cluster is None:
+            it.grade, it.candidates = GRADE_PARTIAL, []
+            it.note = "a person looked and none of the possible next pieces fitted"
+        else:
+            if cluster not in [c for _, c in it.candidates]:
+                raise ValueError("not one of the offered pieces")
+            it._forced[len(r.chain)] = cluster
+            r2 = self._rb.rebuild(it.start, it.size, forced=dict(it._forced))
+            it._last = r2
+            if r2.status == "complete" and r2.exact_end:
+                if it.saved_as and self.out:
+                    (self.out / it.saved_as).unlink(missing_ok=True)
+                    self._taken.discard(it.saved_as.lower())
+                pieces = 1 + sum(1 for a, b in zip(r2.chain, r2.chain[1:]) if b != a + 1)
+                self._accept(it, r2, f"rebuilt from {pieces} pieces, {len(it._forced)} chosen by eye")
+                it.note, it.candidates, it.saved_as = "", [], ""
+                self._avail[np.asarray(r2.chain, np.int64)] = False
+                self._deliver_item(it)
+            else:
+                it.chain, it.percent, it.picks, it.candidates = r2.chain, r2.percent, r2.picks, r2.candidates
+                it.note = r2.reason
+                it.grade = GRADE_REVIEW if (r2.status == "review" and r2.candidates) else GRADE_PARTIAL
+        self.summary["counts"] = self._counts()
+        if self.out:
+            self._write_report()
+        return it.grade
 
     def _accept(self, it: Item, r: Result, method: str) -> None:
         it.chain, it.percent, it.picks = r.chain, 100.0, r.picks
@@ -447,11 +531,15 @@ class Recovery:
     def _deliver(self) -> None:
         """The mandatory final audit, then write files. Nothing reaches Recovered
         without passing the audit on the exact bytes being written."""
-        vol = self.vol
-        taken: set[str] = set()
+        self._taken: set[str] = set()
         for it in self.items:
+            self._deliver_item(it)
+
+    def _deliver_item(self, it: Item) -> None:
+        vol, taken = self.vol, self._taken
+        if True:
             if not it.chain:
-                continue
+                return
             if -1 in it.chain:       # a video with pieces missing: blank where the card has nothing
                 data = b"".join(bytes(vol.cl) if c < 0 else bytes(vol.cluster(c)) for c in it.chain)[:it.size]
             else:
@@ -470,7 +558,7 @@ class Recovery:
                         it.grade, it.note = GRADE_REVIEW, "failed the final check: " + note
             it.out_bytes = len(data)
             if not self.out:
-                continue
+                return
             folder = FOLDER_OK if it.grade in (GRADE_VERIFIED, GRADE_NO_PREVIEW, GRADE_UNVERIFIED) else FOLDER_PARTIAL
             sub = "/".join(_safe(p) for p in it.folder.split("/") if p)
             name = _safe(it.name)

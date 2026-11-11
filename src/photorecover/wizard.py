@@ -43,6 +43,33 @@ class Session:
         self.log: list[str] = []
         self.summary: dict | None = None
         self.clone_info: dict = {}
+        self.rec: Recovery | None = None
+
+    def review_next(self) -> dict | None:
+        """The next close call for a person to decide, with pictures as data URLs."""
+        import base64
+        if not self.rec:
+            return None
+        for idx in self.rec.review_queue():
+            shown = self.rec.review_images(idx)
+            if not shown["candidates"]:
+                self.rec.review_pick(idx, None)
+                continue
+
+            def url(b):
+                return "data:image/jpeg;base64," + base64.b64encode(b).decode()
+
+            return dict(index=idx, name=shown["name"], percent=shown["percent"],
+                        left=len(self.rec.review_queue()),
+                        preview=url(shown["preview"]) if shown["preview"] else None,
+                        candidates=[dict(cluster=c["cluster"], image=url(c["image"]), join=c["join"])
+                                    for c in shown["candidates"]])
+        return None
+
+    def review_pick(self, index: int, cluster) -> None:
+        if self.rec and index in self.rec.review_queue():
+            self.rec.review_pick(index, None if cluster is None else int(cluster))
+            self.summary = self.rec.summary
 
     # ---- actions ----------------------------------------------------------
     def begin_card(self):
@@ -118,6 +145,7 @@ class Session:
             try:
                 rec = Recovery(self.image, out, lambda m: self.log.append(m))
                 self.summary = rec.run()
+                self.rec = rec
                 self.step = "done"
             except NotFat as e:
                 self.step, self.message = "error", f"This card's format is not supported yet: {e}"
@@ -143,6 +171,7 @@ class Session:
                 s["clone"] = dict(bad_bytes=self.clone_info.get("bad_bytes", 0))
             if self.step == "done":
                 s["summary"] = self.summary
+                s["to_review"] = len(self.rec.review_queue()) if self.rec else 0
             return s
 
 
@@ -214,6 +243,11 @@ def make_server(session: Session, token: str, port: int = 0) -> ThreadingHTTPSer
                         session.start_clone(body.get("folder"))
                     elif a == "use_image":
                         session.use_image(str(body.get("path", "")))
+                    elif a == "review_pick":
+                        session.review_pick(int(body.get("index", -1)), body.get("cluster"))
+                        extra["review"] = session.review_next()
+                    elif a == "review_next":
+                        extra["review"] = session.review_next()
                     elif a == "restart":
                         session.__init__()
                     elif a == "open":

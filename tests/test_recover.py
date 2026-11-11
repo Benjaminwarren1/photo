@@ -195,3 +195,42 @@ def test_progressive_photos_whole_only_and_never_wrong(tmp_path):
     rec = run(tmp_path, b)
     good, missed = check(rec, b, tmp_path, expect_all_recoverable=False)
     assert good >= sum(t.recoverable and not t.fragmented for t in b.history)
+
+
+def test_close_calls_can_be_decided_by_a_person(tmp_path):
+    """When the tool will not decide a join itself, a person chooses from pictures. Choosing
+    the right piece each time must finish the photo exactly, and the pictures must be real."""
+    from photorecover.recover import GRADE_REVIEW
+    b = used_card(**CARDS["fat16-16k"])
+    b.delete_all()
+    rec = run(tmp_path, b)
+    truth = {(t.clusters[0], t.size): t for t in b.history}
+    # Put fragmented photos back into the undecided state: every cluster free again, and the
+    # rebuilder told to leave each join to a person.
+    rec._avail[:] = ~rec.vol.allocated() & ~rec.vol.blank_clusters()
+    rec._rb.always_ask = True
+    finished = 0
+    for idx, it in enumerate(rec.items):
+        t = truth.get((it.start, it.size))
+        if not (t and t.recoverable and t.fragmented):
+            continue
+        r = rec._rb.rebuild(it.start, it.size)
+        assert r.status == "review" and r.candidates
+        (tmp_path / "out" / it.saved_as).unlink()
+        it._last, it.grade, it.candidates, it.chain, it.percent, it.saved_as = r, GRADE_REVIEW, r.candidates, r.chain, r.percent, ""
+        assert idx in rec.review_queue()
+        for _ in range(12):
+            if it.grade != GRADE_REVIEW:
+                break
+            shown = rec.review_images(idx)
+            assert shown["candidates"] and all(c["image"][:2] == b"\xff\xd8" for c in shown["candidates"])
+            assert shown["preview"]
+            want = t.clusters[len(it.chain)]
+            assert want in [c for _, c in it.candidates], "the right piece was not among those offered"
+            rec.review_pick(idx, want)
+        assert it.grade == "Verified" and it.saved_as.startswith("Recovered/")
+        assert hashlib.sha256((tmp_path / "out" / it.saved_as).read_bytes()).hexdigest() == t.sha256
+        assert any(p.get("how") == "chosen by a person" for p in it.picks)
+        finished += 1
+    assert finished >= 3
+    assert "chosen by eye" in (tmp_path / "out" / "report.html").read_text()

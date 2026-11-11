@@ -60,3 +60,36 @@ def test_wizard_card_to_recovered_folder(tmp_path, monkeypatch):
         assert (out / "report.html").exists() and (out / "card.img.sha256.txt").exists()
     finally:
         srv.shutdown()
+
+
+def test_wizard_review_api(tmp_path):
+    """The wizard hands out close calls as pictures and applies the choice."""
+    from photorecover.recover import GRADE_REVIEW
+    b = used_card(fat_type=16, cluster_size=16384, size_mb=128, seed=2)
+    b.delete_all()
+    img = tmp_path / "card.img"
+    b.save(img)
+    session = wizard.Session()
+    session.use_image(str(img))
+    for _ in range(240):
+        if session.step in ("done", "error"):
+            break
+        time.sleep(0.25)
+    assert session.step == "done" and session.state()["to_review"] == 0
+    assert session.review_next() is None
+    rec = session.rec
+    truth = {(t.clusters[0], t.size): t for t in b.history}
+    idx, it, t = next((i, it, truth[(it.start, it.size)]) for i, it in enumerate(rec.items)
+                      if (it.start, it.size) in truth and truth[(it.start, it.size)].fragmented
+                      and truth[(it.start, it.size)].recoverable)
+    rec._avail[:] = ~rec.vol.allocated() & ~rec.vol.blank_clusters()
+    rec._rb.always_ask = True
+    r = rec._rb.rebuild(it.start, it.size)
+    it._last, it.grade, it.candidates, it.chain, it.percent = r, GRADE_REVIEW, r.candidates, r.chain, r.percent
+    for _ in range(12):
+        nxt = session.review_next()
+        if nxt is None:
+            break
+        assert nxt["index"] == idx and nxt["candidates"][0]["image"].startswith("data:image/jpeg;base64,")
+        session.review_pick(idx, t.clusters[len(it.chain)])
+    assert it.grade == "Verified" and session.state()["to_review"] == 0

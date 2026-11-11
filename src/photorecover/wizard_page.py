@@ -27,6 +27,11 @@ input[type=text]{font:inherit;width:100%;padding:.55rem .7rem;border-radius:.5re
 .row{display:flex;gap:.5rem;align-items:center;margin-top:.4rem}.row input{flex:1}
 progress{width:100%;height:1rem;margin:.8rem 0 .3rem;accent-color:var(--go)}
 table{border-collapse:collapse;width:100%;margin-top:.8rem}td{padding:.4rem .2rem;border-bottom:1px solid var(--line);vertical-align:top}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:.8rem;margin-top:1rem}
+.tile{padding:0;border:2px solid var(--line);border-radius:.6rem;overflow:hidden;background:none;position:relative;line-height:0}
+.tile img{width:100%;display:block}.tile:hover{border-color:var(--go)}
+.tile i{position:absolute;left:0;right:0;border-top:2px dashed #fff;mix-blend-mode:difference;pointer-events:none}
+img.prev{max-width:10rem;border-radius:.4rem;border:1px solid var(--line);display:block;margin:.5rem 0}
 td.n{font-variant-numeric:tabular-nums;font-weight:700;width:4.5rem;font-size:1.2rem}
 label.pick{display:flex;gap:.6rem;align-items:center;padding:.5rem .2rem}
 </style></head><body><main>
@@ -83,20 +88,30 @@ const views={
    .filter(r=>c[r[0]]).map(r=>`<tr><td class="n">${c[r[0]]}</td><td>${r[1]}</td></tr>`).join("");
   return `<h1>Finished</h1><table>${rows||"<tr><td>No deleted files were found on this card.</td></tr>"}</table>
   <p class="soft" style="margin-top:1rem">Saved in ${esc(S.folder)}. The copy of your card (card.img) is there too; keep it until you are happy with the results.</p>
+  ${S.to_review?`<div class="note"><b>${S.to_review} photo${S.to_review>1?"s":""} need your eye.</b> The program found more than one piece of the card that could come next and would rather ask than guess. <button style="margin-left:.5rem" onclick="review()">Decide now</button></div>`:""}
   <div class="actions"><button class="go" onclick="api('open',{what:'folder'})">Open the folder</button><button onclick="api('open',{what:'report'})">See the full report</button><button onclick="api('restart')">Recover another card</button></div>`;},
  image(){steps(3);return `<h1>Choose the card image</h1><p>A raw copy of a card, usually a .img or .dd file.</p>
   <div class="row"><input type="text" id="img" aria-label="Path of the image file" placeholder="C:\\…\\card.img"><button onclick="pick('file')">Choose…</button></div>
   ${S&&S.message?err():""}<div class="actions"><button class="go" onclick="api('use_image',{path:document.getElementById('img').value})">Recover from this file</button><button onclick="go('start')">Back</button></div>`;},
+ review(){steps(5);const r=R;
+  return `<h1>Which one looks right?</h1>
+  <p><b>${esc(r.name)}</b> is ${Math.round(r.percent)}% rebuilt. Each picture below shows the photo around the dashed line, continued with a different piece of the card. Pick the one where the picture carries on properly below the line.</p>
+  ${r.preview?`<p class="soft">This is how the whole photo should look:</p><img class="prev" src="${r.preview}" alt="Small preview of the whole photo">`:""}
+  <div class="tiles">${r.candidates.map((c,i)=>`<button class="tile" onclick="pickPiece(${r.index},${c.cluster})" aria-label="Choice ${i+1}"><img src="${c.image}" alt="Choice ${i+1}"><i style="top:${(c.join*100).toFixed(1)}%"></i></button>`).join("")}</div>
+  <div class="actions"><button onclick="pickPiece(${r.index},null)">None of these look right</button><button onclick="go(null)">Stop for now</button></div>
+  <p class="soft">${r.left} left to decide.</p>`;},
  error(){steps(0);return `<h1>That didn't work</h1><p>${esc(S.message)}</p><p class="soft">Your card has not been changed.</p>
   <div class="actions"><button class="go" onclick="api('restart')">Start again</button></div>`;}
 };
-let local=null;
+let local=null, R=null;
+async function review(){const j=await api("review_next"); R=j.review; local=R?"review":null; render();}
+async function pickPiece(index,cluster){V.style.opacity=.5; const j=await api("review_pick",{index,cluster}); V.style.opacity=1; R=j.review; local=R?"review":null; render();}
 function go(v){local=v; if(S)S.message=""; render();}
 async function pick(kind){const j=await api("pick",{kind}); if(!j.path)return;
   if(kind==="folder"){folderEdit=j.path; await api("set_folder",{folder:j.path});} else document.getElementById("img").value=j.path;}
 function render(){
   if(!S)return; document.getElementById("ver").textContent="version "+S.version;
-  let v=S.step; if(v==="start"&&local)v=local; else if(v!=="start")local=null;
+  let v=S.step; if((v==="start"||(v==="done"&&local==="review"))&&local)v=local; else if(v!=="start")local=null;
   const keep=document.activeElement&&document.activeElement.id, val=keep&&document.activeElement.value;
   const html=views[v]();
   if(V.dataset.v!==v||!["confirm","image"].includes(v)||V.dataset.h!==html){V.innerHTML=html;V.dataset.v=v;V.dataset.h=html;

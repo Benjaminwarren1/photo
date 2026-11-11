@@ -24,6 +24,7 @@ from . import jpeg
 from .jpeg import ST_DONE, ST_ERROR, ST_NEED_DATA
 
 CLEAR_WIN = 1.6          # a winner must beat the runner-up by this factor
+CLEAR_WIN_NO_PREVIEW = 2.0   # stricter when only the join itself can be judged
 MIN_MCUS = 12            # fewer new MCUs than this cannot be judged
 CEILING = 2.4            # times the photo's own limit
 BRANCHES = 24            # contenders followed to the end at an uncertain join
@@ -147,6 +148,7 @@ class Rebuilder:
         """avail[c] is True for clusters that may still belong to an unrecovered file."""
         self.vol = vol
         self.avail = avail
+        self.always_ask = False      # leave every join that is not simply "the next free cluster" to a person
 
     def _next_avail(self, c: int, used: set[int]) -> int | None:
         c += 1
@@ -179,7 +181,9 @@ class Rebuilder:
         res.image_bytes = size
         return res
 
-    def rebuild(self, start: int, size: int | None, contiguous_only: bool = False) -> Result:
+    def rebuild(self, start: int, size: int | None, contiguous_only: bool = False,
+                forced: dict[int, int] | None = None) -> Result:
+        """forced maps a position in the chain to the cluster a person chose for it."""
         vol, cl = self.vol, self.vol.cl
         res = Result(start, size)
         if not vol.valid(start):
@@ -210,6 +214,7 @@ class Rebuilder:
         judge = Judge(info, jpeg.decode_thumb(info))
         has_preview = res.has_preview = judge.target is not None
         end_off = None if size is None else (size - 2) % cl
+        margin = CLEAR_WIN if has_preview else CLEAR_WIN_NO_PREVIEW
 
         def assess(w: _Work, dcv, m0):
             return judge.preview_score(dcv, m0), judge.seam_score(w.stream.dc, dcv, m0)
@@ -256,6 +261,11 @@ class Rebuilder:
                     return
                 last = n_total is not None and len(w.chain) == n_total - 1
                 m0 = w.stream.mcus
+                if forced and len(w.chain) in forced:
+                    c = forced[len(w.chain)]
+                    w.picks.append(dict(index=len(w.chain), cluster=c, how="chosen by a person"))
+                    commit(w, c, vol.cluster(c))
+                    continue
                 nx = self._next_avail(w.chain[-1], w.used)
                 nx_ok = False
                 if nx is not None:
@@ -293,6 +303,11 @@ class Rebuilder:
                 # 1. Proof by completion. Let each contender run on through the free clusters
                 #    that follow it: only a right choice can end with every block decoded and
                 #    the end marker exactly in place. The next free cluster always gets a try.
+                if self.always_ask and not (forced and len(w.chain) in forced):
+                    w.candidates = [(round(sc, 2), c) for sc, c in plausible[:8]]
+                    w.status, w.reason = ("review", "waiting for a person to choose the next piece") if plausible \
+                        else ("partial", "the rest of this photo is not on the card")
+                    return
                 tries = plausible[:BRANCHES if has_preview else BRANCHES_NO_PREVIEW]
                 if nx_ok and all(c != nx for _, c in tries):
                     tries = [next((f for f in found if f[1] == nx), (ceiling, nx))] + tries
@@ -318,9 +333,8 @@ class Rebuilder:
                 pick = None
                 if last and len(found) == 1:
                     pick = found[0]
-                elif has_preview and plausible and (
-                        len(found) == 1 or found[1][0] >= CLEAR_WIN * max(found[0][0], 0.25)):
-                    pick = found[0]      # with no preview a lone score is not trusted; a person decides
+                elif plausible and (len(found) == 1 or found[1][0] >= margin * max(found[0][0], 0.25)):
+                    pick = found[0]      # a wrong pick here cannot survive the exact finish required later
                 if pick is not None:
                     if pick[1] != nx:
                         w.picks.append(dict(index=len(w.chain), cluster=pick[1], score=round(pick[0], 2),
