@@ -3,12 +3,18 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macOS is left out for now: its hosted runners were never picked up within GitHub's
+        # 15 minute limit, which marked every run as failed. Add it back when the Mac version is worked on.
+        os: [ubuntu-latest, windows-latest]
         python: ["3.12"]
         include:
           - os: ubuntu-latest

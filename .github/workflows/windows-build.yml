@@ -5,6 +5,9 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: windows-latest
