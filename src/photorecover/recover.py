@@ -153,6 +153,7 @@ class Recovery:
         self.log = log or (lambda msg: None)
         self.items: list[Item] = []
         self.summary: dict = {}
+        self.problems: list[str] = []
 
     # ---- helpers ----------------------------------------------------------
     def _resolve_start(self, e: Entry, ext: str) -> int:
@@ -198,6 +199,16 @@ class Recovery:
         def claim(chain):
             avail[np.asarray(chain, np.int64)] = False
 
+        def attempt(it, fn, *args, **kw):
+            """One odd file must never stop the whole run."""
+            try:
+                return fn(*args, **kw)
+            except Exception as e:  # noqa: BLE001
+                self.problems.append(f"{it.name if it else '?'}: {type(e).__name__}: {e}")
+                if it is not None:
+                    it.note = "the tool hit an unexpected problem with this file and skipped it"
+                return None
+
         # one item per distinct (start, size); a long name wins over a short one
         seen: dict[tuple[int, int], Item] = {}
         for e in targets:
@@ -220,14 +231,16 @@ class Recovery:
         loose: list[tuple[Item, Result]] = []
         for it in jpegs:
             hint = it._hint
-            r = rb.prove_chain(hint, it.size) if hint else None
+            r = attempt(it, rb.prove_chain, hint, it.size) if hint else None
             if r is not None:
                 pieces = 1 + sum(1 for a, b in zip(hint, hint[1:]) if b != a + 1)
                 self._accept(it, r, "found whole" if pieces == 1 else
                              f"rebuilt from {pieces} pieces using the card's own record")
                 claim(r.chain)
                 continue
-            r = rb.rebuild(it.start, it.size, contiguous_only=True)
+            r = attempt(it, rb.rebuild, it.start, it.size, contiguous_only=True)
+            if r is None:
+                continue
             if r.status == "complete" and r.exact_end:
                 self._accept(it, r, "found whole")
                 claim(r.chain)
@@ -246,7 +259,9 @@ class Recovery:
         if videos:
             self.log(f"Checking {len(videos)} videos")
         for it in videos:
-            v = vr.rebuild(it.start, it.size)
+            v = attempt(it, vr.rebuild, it.start, it.size)
+            if v is None:
+                continue
             if v.status == "failed":
                 it.note = v.reason
                 continue
@@ -299,7 +314,9 @@ class Recovery:
         for rnd in range(2):
             still = []
             for it in pending:
-                r = rb.rebuild(it.start, it.size)
+                r = attempt(it, rb.rebuild, it.start, it.size)
+                if r is None:
+                    continue
                 if r.status == "complete" and r.exact_end:
                     pieces = 1 + sum(1 for a, b in zip(r.chain, r.chain[1:]) if b != a + 1)
                     self._accept(it, r, f"rebuilt from {pieces} pieces")
@@ -338,8 +355,8 @@ class Recovery:
         for c in heads:
             if not avail[c]:
                 continue
-            r = rb.rebuild(c, None)
-            if r.status == "complete":
+            r = attempt(None, rb.rebuild, c, None)
+            if r is not None and r.status == "complete":
                 n_found += 1
                 it = Item(name=f"found_{n_found:05d}.jpg", folder="Found by scanning", size=r.size, start=c,
                           kind="jpeg", source="found by scanning")
@@ -356,7 +373,7 @@ class Recovery:
         self.summary = dict(tool=f"photorecover {__version__}", filesystem=vol.kind,
                             cluster_size=cl, clusters=vol.ncl, card_in_use=round(float(used_fraction), 3),
                             files_listed=len(items), counts=counts, seconds=round(time.time() - t0, 1),
-                            fast_decoder=jpeg.HAVE_C)
+                            fast_decoder=jpeg.HAVE_C, problems=self.problems[:50])
         if self.out:
             self._write_report()
         return self.summary
@@ -403,7 +420,10 @@ class Recovery:
             else:
                 data = vol.read_chain(it.chain, it.size if (it.percent == 100.0 or it.kind != "jpeg") else None)
             if it.kind == "jpeg" and it.percent == 100.0 and it.grade in (GRADE_VERIFIED, GRADE_NO_PREVIEW):
-                ok, note, _ = audit_jpeg(data)
+                try:
+                    ok, note, _ = audit_jpeg(data)
+                except Exception as e:  # noqa: BLE001
+                    ok, note = False, f"the check itself failed ({type(e).__name__})"
                 if not ok:
                     whole = all(b == a + 1 for a, b in zip(it.chain, it.chain[1:]))
                     if whole and "preview" in note:
