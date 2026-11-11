@@ -15,6 +15,7 @@ blocks the header promises and finds the end marker where the size says it is.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -31,6 +32,8 @@ BRANCHES = 24            # contenders followed to the end at an uncertain join
 BRANCHES_NO_PREVIEW = 96
 MAX_SEARCHES = 200       # whole-card searches allowed for one photo
 MAX_HEADER = 4 * 1024 * 1024
+FLAT = 0.75              # luma spread (0-255 scale) below which decoded data is one flat colour
+NOT_A_PHOTO = 1e6        # the score given to such data
 SCREEN_MCUS = 32         # a whole-card search first looks at this many MCUs of every candidate
 SCREEN_KEEP = 300        # ... and only the best-looking go on to be decoded in full
 SCREEN_SURE = 100        # this many always do, however poor they look
@@ -82,6 +85,8 @@ class Judge:
             cm = float(np.abs(xl - yl).mean())
         else:
             cm = float(np.abs(x[:, self.ny:] - y[:, self.ny:]).mean())
+        if xl.std() < FLAT and yl.std() > 4 * FLAT:
+            return NOT_A_PHOTO          # data that decodes to one flat colour where the picture has detail
         pen = 0.0
         if yl.std() > 6:
             a, b = xl - xl.mean(), yl - yl.mean()
@@ -104,6 +109,8 @@ class Judge:
         above[from_prev] = np.concatenate([pv[:, :self.ny].mean(axis=1, keepdims=True), pv[:, self.ny:]], axis=1)
         if (~from_prev).any():
             above[~from_prev] = mean_new[idx[~from_prev] - m0]
+        if n >= 2 * MIN_MCUS and mean_new[:, 0].std() < FLAT and above[:, 0].std() > 4 * FLAT:
+            return NOT_A_PHOTO
         return float(np.abs(mean_new - above).mean())
 
 
@@ -129,14 +136,20 @@ class Judge:
                 a, b = xl - xl.mean(axis=1, keepdims=True), yl - yl.mean()
                 cc = (a * b).sum(axis=1) / np.sqrt((a * a).sum(axis=1) * (b * b).sum() + 1e-6)
                 pen = 8.0 * np.maximum(0.0, 0.85 - cc)
-            return cm + pen
+            sc = cm + pen
+            if yl.std() > 4 * FLAT:
+                sc[xl.std(axis=1) < FLAT] = NOT_A_PHOTO
+            return sc
         X = self.X
         if m0 < X or n > X:
             return None
         pv = self.values(prev[m0 - X:m0 - X + n])
         above = np.concatenate([pv[:, :ny].mean(axis=1, keepdims=True), pv[:, ny:]], axis=1)
         new = np.concatenate([x[:, :, :ny].mean(axis=2, keepdims=True), x[:, :, ny:]], axis=2)
-        return np.abs(new - above[None]).reshape(k, -1).mean(axis=1)
+        sc = np.abs(new - above[None]).reshape(k, -1).mean(axis=1)
+        if n >= 2 * MIN_MCUS and above[:, 0].std() > 4 * FLAT:
+            sc[new[:, :, 0].std(axis=1) < FLAT] = NOT_A_PHOTO
+        return sc
 
 
 def limit(scores: list[float], floor: float) -> float:
@@ -348,6 +361,19 @@ class Rebuilder:
                     sc = ps if has_preview else ss
                     found.append((0.0 if sc is None else sc, int(c)))
                 found.sort()
+                # Two places on the card can hold the very same bytes (a photo saved twice).
+                # They are one choice, not two rivals: keep the first of each.
+                seen_bytes: set[bytes] = set()
+                uniq = []
+                for f in found:
+                    piece = vol.cluster(f[1])
+                    if last:                  # what lies after the end of the photo is not part of it
+                        piece = piece[:end_off + 2]
+                    key = hashlib.blake2b(piece, digest_size=12).digest()
+                    if key not in seen_bytes:
+                        seen_bytes.add(key)
+                        uniq.append(f)
+                every, found = found, uniq        # all copies still get a try at finishing the photo
                 ceiling = CEILING * lim_of(w)       # beyond this even the best is not credible
                 plausible = [f for f in found if f[0] <= ceiling]
                 # 1. Proof by completion. Let each contender run on through the free clusters
@@ -358,9 +384,9 @@ class Rebuilder:
                     w.status, w.reason = ("review", "waiting for a person to choose the next piece") if plausible \
                         else ("partial", "the rest of this photo is not on the card")
                     return
-                tries = plausible[:BRANCHES if has_preview else BRANCHES_NO_PREVIEW]
+                tries = [f for f in every if f[0] <= ceiling][:BRANCHES if has_preview else BRANCHES_NO_PREVIEW]
                 if nx_ok and all(c != nx for _, c in tries):
-                    tries = [next((f for f in found if f[1] == nx), (ceiling, nx))] + tries
+                    tries = [next((f for f in every if f[1] == nx), (ceiling, nx))] + tries
                 done = []
                 for sc, c in tries:
                     b = w.fork()
@@ -371,6 +397,19 @@ class Rebuilder:
                         whole = ps if has_preview else ss
                         done.append((sc if whole is None else whole, c, b))
                 done.sort(key=lambda d: d[0])
+                # ... and two ways of finishing that produce identical bytes are the same photo
+                seen_bytes, uniq = set(), []
+                for d in done:
+                    h = hashlib.blake2b(digest_size=12)
+                    end = d[2].stream.end_offset()
+                    left = (size if size is not None else info.data_off + end) - len(w.chain) * cl
+                    for c in d[2].chain[len(w.chain):]:
+                        h.update(vol.cluster(c)[:max(0, left)])     # only up to the end of the photo
+                        left -= cl
+                    if h.digest() not in seen_bytes:
+                        seen_bytes.add(h.digest())
+                        uniq.append(d)
+                done = uniq
                 if done and done[0][0] <= ceiling and (
                         len(done) == 1 or done[1][0] >= CLEAR_WIN * max(done[0][0], 0.25)):
                     sc, c, b = done[0]

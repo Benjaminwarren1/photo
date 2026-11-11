@@ -286,3 +286,31 @@ def test_card_reformatted_with_different_settings(tmp_path, deleted_first, folde
     found = sum(t.sha256 in got for t in intact)
     assert found >= 0.9 * len(intact) and found >= 10, f"{found} of {len(intact)}"
 
+
+
+def test_photo_saved_twice_is_not_a_close_call(tmp_path):
+    """Two copies of one photo put identical bytes in two places. Either copy is a correct
+    continuation, so that must not be sent to a person as if it were a hard choice."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    b = FatBuilder(64, 16, 8192)
+    b.mkdir("DCIM")
+    twin = make_photo(555, 1600, 1200)
+    for i in range(20):
+        b.write(f"DCIM/A{i}.JPG", make_photo(600 + i % 10, 640, 480))
+    for i in range(1, 20, 2):
+        b.delete(f"DCIM/A{i}.JPG")
+    b.next_free = 2
+    t1 = b.write("DCIM/TWIN1.JPG", twin)     # both land in the holes, so both are stored in pieces
+    t2 = b.write("DCIM/TWIN2.JPG", twin)
+    pieces = lambda t: 1 + sum(b != a + 1 for a, b in zip(t.clusters, t.clusters[1:]))
+    assert pieces(t1) >= 3 and pieces(t2) >= 2
+    b.delete_all()
+    for i in range(0, 20, 2):       # the photos in between lost their first block long ago, so they
+        o = b.cluster_off(b.truth[f"DCIM/A{i}.JPG"].clusters[0])     # cannot be recognised and set aside
+        b.img[o:o + b.cl] = bytes([7]) * b.cl
+    rec = run(tmp_path, b)
+    twins = [it for it in rec.items if it.size == len(twin)]
+    assert len(twins) == 2 and all(it.grade == "Verified" for it in twins), [(it.name, it.grade, it.note) for it in twins]
+    for it in twins:
+        assert (tmp_path / "out" / it.saved_as).read_bytes() == twin

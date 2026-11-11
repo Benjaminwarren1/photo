@@ -413,7 +413,7 @@ class Recovery:
                     continue
                 if r.status == "complete" and r.exact_end:
                     pieces = 1 + sum(1 for a, b in zip(r.chain, r.chain[1:]) if b != a + 1)
-                    self._accept(it, r, f"rebuilt from {pieces} pieces")
+                    self._accept(it, r, "found whole" if pieces == 1 else f"rebuilt from {pieces} pieces")
                     claim(r.chain)
                 elif r.status == "complete":
                     loose.append((it, r))
@@ -623,6 +623,7 @@ class Recovery:
                     if whole and "preview" in note:
                         it.note = (it.note + "; " if it.note else "") + "the picture " + note + \
                             " (its preview may be out of date)"
+                        it.grade = GRADE_NO_PREVIEW      # complete and in one piece, but the preview did not vouch for it
                     else:
                         it.grade, it.note = GRADE_REVIEW, "failed the final check: " + note
             it.out_bytes = len(data)

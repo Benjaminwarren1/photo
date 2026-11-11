@@ -61,3 +61,23 @@ def test_quick_look_at_candidates_agrees_with_full_decode():
     s0 = STATE.pack(0, *STATE.unpack(st.state)[1:])
     py = _scan_py.screen_many(image, 0, cl, clusters.astype("<i8").tobytes(), st.carry, s0, info.spec, 16)
     assert py[0] == full.astype("<i8").tobytes() and py[1] == dc.tobytes() and py[2] == short.astype("<i8").tobytes()
+
+
+def test_flat_colour_is_not_mistaken_for_photo():
+    """Stray data can decode as 'more of the last colour'. Where the picture has detail,
+    that must never count as a match, however close the colour is."""
+    import numpy as np
+    from photorecover.rebuild import NOT_A_PHOTO, Judge
+    photo = make_photo(78, 640, 480)
+    info = jpeg.parse_header(photo)
+    st = jpeg.Stream(info)
+    st.feed(photo[info.data_off:])
+    judge = Judge(info, jpeg.decode_thumb(info))
+    m0, n = info.mcus_x * 5, 64
+    real = st.dc[m0:m0 + n]
+    flat = np.repeat(real[:1], n, axis=0)
+    flat[:, :judge.ny] = real[0, 0]          # every block the same: what data with no changes decodes to
+    assert judge.preview_score(real, m0) < 20
+    assert judge.preview_score(flat, m0) == NOT_A_PHOTO
+    both = judge.screen_scores(st.dc, np.stack([real, flat]), m0)
+    assert both[0] == pytest.approx(judge.preview_score(real, m0), rel=1e-3) and both[1] == NOT_A_PHOTO
