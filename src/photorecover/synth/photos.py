@@ -77,11 +77,11 @@ def _exif_with_thumbnail(thumb: bytes, orientation: int = 1) -> bytes:
 def make_photo(seed: int, width: int = 1600, height: int = 1200, quality: int = 88,
                thumb_size: tuple[int, int] = (160, 120), preview: bool = True,
                dark: bool = False, restart_interval: int = 0, subsampling: int = 2,
-               letterbox: bool = False, progressive: bool = False) -> bytes:
+               letterbox: bool = False, progressive: bool = False, optimize: bool = False) -> bytes:
     """Returns the bytes of a JPEG. With preview=True it carries an EXIF thumbnail
     of the whole picture, as phone and camera JPEGs do."""
     im = draw_scene(seed, width, height, dark)
-    kw: dict = dict(quality=quality, subsampling=subsampling, progressive=progressive)
+    kw: dict = dict(quality=quality, subsampling=subsampling, progressive=progressive, optimize=optimize)
     if restart_interval:
         kw["restart_marker_blocks"] = restart_interval
     if preview:

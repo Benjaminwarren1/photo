@@ -185,3 +185,13 @@ def test_video_with_sparse_checkpoints_is_never_wrongly_verified(tmp_path):
         it = next(i for i in rec.items if i.size == len(data))
         if it.grade == "Verified":
             assert (tmp_path / "out" / it.saved_as).read_bytes() == data
+
+
+def test_progressive_photos_whole_only_and_never_wrong(tmp_path):
+    """Progressive JPEGs cannot be rebuilt yet. Whole ones come back; a stale entry whose
+    space now holds a different photo must not be delivered."""
+    b = used_card(fat_type=16, cluster_size=16384, size_mb=128, seed=42, progressive=True, photos=20)
+    b.delete_all()
+    rec = run(tmp_path, b)
+    good, missed = check(rec, b, tmp_path, expect_all_recoverable=False)
+    assert good >= sum(t.recoverable and not t.fragmented for t in b.history)

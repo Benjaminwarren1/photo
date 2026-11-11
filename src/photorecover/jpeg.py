@@ -213,6 +213,45 @@ def parse_header(buf: bytes) -> JpegInfo:
         pos = seg_end
 
 
+def find_end(data: bytes) -> int | None:
+    """Walk the markers of any JPEG (progressive included) and return the offset just
+    past its end marker, or None if the structure breaks first. This says where the
+    picture really ends, which need not be where the file ends."""
+    n = len(data)
+    if data[:2] != b"\xff\xd8":
+        return None
+    pos = 2
+    while pos + 2 <= n:
+        if data[pos] != 0xFF:
+            return None
+        m = data[pos + 1]
+        if m == 0xFF:
+            pos += 1
+            continue
+        if m == 0xD9:
+            return pos + 2
+        if m == 0x01 or 0xD0 <= m <= 0xD8:
+            pos += 2
+            continue
+        if pos + 4 > n:
+            return None
+        (ln,) = struct.unpack_from(">H", data, pos + 2)
+        if ln < 2:
+            return None
+        pos += 2 + ln
+        if m == 0xDA:      # entropy-coded data follows: skip to the next real marker
+            while True:
+                pos = data.find(b"\xff", pos)
+                if pos < 0 or pos + 1 >= n:
+                    return None
+                nxt = data[pos + 1]
+                if nxt == 0 or 0xD0 <= nxt <= 0xD7:
+                    pos += 2
+                    continue
+                break
+    return None
+
+
 def decode_thumb(info: JpegInfo) -> np.ndarray | None:
     """The embedded preview as a float YCbCr array, with any black bars removed."""
     if not info.thumb:

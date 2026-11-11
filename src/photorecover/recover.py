@@ -146,6 +146,32 @@ def audit_jpeg(data: bytes) -> tuple[bool, str, bool]:
     return True, "", True
 
 
+def pixel_audit(data: bytes, info) -> bool | None:
+    """Preview check for JPEG kinds the block decoder cannot read: decode with Pillow at
+    reduced size and compare with the preview in bands. None = no preview or cannot decode."""
+    thumb = jpeg.decode_thumb(info) if info else None
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            im.draft("YCbCr", (max(1, im.width // 8), max(1, im.height // 8)))
+            a = np.asarray(im.convert("YCbCr"), np.float32)
+    except Exception:  # noqa: BLE001
+        return False
+    if thumb is None:
+        return None
+    th, tw = thumb.shape[:2]
+    a = np.asarray(Image.fromarray(a.astype(np.uint8), "YCbCr").resize((tw, th), Image.BILINEAR), np.float32)
+    band, scores = max(2, th // 24), []
+    for r0 in range(0, th - band + 1, band):
+        x, y = a[r0:r0 + band], thumb[r0:r0 + band]
+        cm = float(np.abs(x[..., 1:] - y[..., 1:]).mean())
+        yx, yy = x[..., 0] - x[..., 0].mean(), y[..., 0] - y[..., 0].mean()
+        pen = 0.0
+        if yy.std() > 6:
+            pen = 8 * max(0.0, 0.85 - float((yx * yy).sum() / np.sqrt((yx ** 2).sum() * (yy ** 2).sum() + 1e-6)))
+        scores.append(cm + pen)
+    return not scores or max(scores) <= max(10.0, 3.0 * float(np.median(scores)))
+
+
 class Recovery:
     def __init__(self, image, out_dir=None, log=None):
         self.vol = open_volume(image)
@@ -264,6 +290,11 @@ class Recovery:
                 continue
             if v.status == "failed":
                 it.note = v.reason
+                continue
+            if v.status == "complete" and not _valid_isobmff(vr.read(v, it.size)):
+                # every checkpoint matched, but the file does not end where this entry says:
+                # the space now belongs to a different, later video
+                it.note = "its space was reused by a later file"
                 continue
             it.chain = v.chain
             it.percent = round(100.0 * (len(v.chain) - v.missing) / max(1, len(v.chain)), 1)
@@ -385,26 +416,32 @@ class Recovery:
         it.grade = GRADE_VERIFIED if r.has_preview else GRADE_NO_PREVIEW
 
     def _unsupported(self, it: Item, r: Result) -> None:
-        """Progressive and other unusual JPEGs: taken only if whole, checked by opening them."""
+        """Progressive and other unusual JPEGs cannot be followed block by block. They are
+        taken only if whole: the marker structure must end exactly at the recorded size,
+        the picture must open, and it must match its preview band by band."""
         vol = self.vol
         n = -(-it.size // vol.cl)
         if it.start + n - 1 > vol.max_cluster:
             it.note = "start cluster is outside the card"
             return
-        data = vol.read_run(it.start, it.size)
-        ok = data[-2:] == b"\xff\xd9"
-        if ok:
-            try:
-                with Image.open(io.BytesIO(data)) as im:
-                    im.load()
-            except Exception:  # noqa: BLE001
-                ok = False
-        if ok:
-            it.chain, it.percent = list(range(it.start, it.start + n)), 100.0
-            it.grade, it.method = GRADE_UNVERIFIED, "found whole"
-            it.note = f"{r.reason}: opens correctly, but this kind cannot be checked block by block"
+        data = bytes(vol.read_run(it.start, it.size))
+        why = None
+        if jpeg.find_end(data) != it.size:
+            why = "stored in pieces or overwritten, and this kind cannot be rebuilt yet"
         else:
-            it.note = f"{r.reason}: stored in pieces, and this kind cannot be rebuilt yet"
+            verdict = pixel_audit(data, r.info)
+            if verdict is False:
+                why = "does not match its own preview, so it is probably stored in pieces"
+        if why:
+            it.note = f"{r.reason}: {why}"
+            return
+        it.chain, it.percent, it.method = list(range(it.start, it.start + n)), 100.0, "found whole"
+        if verdict is True:
+            it.grade = GRADE_VERIFIED
+            it.note = f"{r.reason}: checked against its preview"
+        else:
+            it.grade = GRADE_UNVERIFIED
+            it.note = f"{r.reason}: opens correctly, but has no preview to check the picture against"
 
     # ---- output -----------------------------------------------------------
     def _deliver(self) -> None:
