@@ -40,7 +40,22 @@ def main(argv=None) -> int:
     p = sub.add_parser("pilot", help="recover, then let another program decide the close calls using JSON lines")
     p.add_argument("image", type=Path)
     p.add_argument("--out", type=Path)
+    k = sub.add_parser("check", help="run the final check on photo files: is each one whole, and does it match its own preview?")
+    k.add_argument("files", type=Path, nargs="+")
     a = ap.parse_args(argv)
+
+    if a.cmd == "check":
+        from .recover import audit_jpeg
+        worst = 0
+        for f in a.files:
+            try:
+                ok, note, had_preview = audit_jpeg(f.read_bytes())
+            except OSError as e:
+                ok, note, had_preview = False, f"cannot be read ({e.strerror})", False
+            verdict = ("passes" + ("" if had_preview else ", but has no preview to compare with")) if ok else f"FAILS: {note}"
+            print(f"{f}: {verdict}")
+            worst = max(worst, 0 if ok else 1)
+        return worst
 
     if a.cmd in (None, "wizard"):
         from . import wizard
