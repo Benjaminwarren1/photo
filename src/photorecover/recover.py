@@ -180,12 +180,28 @@ def audit_jpeg(data: bytes) -> tuple[bool, str, bool]:
     band = max(1, info.mcus_y // 24) * X
     scores = [s for m0 in range(0, total, band)
               if (s := judge.preview_score(st.dc[m0:m0 + band], m0)) is not None]
-    if scores:
-        med, worst = float(np.median(scores)), max(scores)
-        if worst > max(10.0, 3.0 * med):
-            at = 100 * scores.index(worst) // len(scores)
-            return False, f"does not match its own preview about {at}% of the way down", True
+    bad = first_bad_band(scores)
+    if bad is not None:
+        return False, f"does not match its own preview about {100 * bad // len(scores)}% of the way down", True
     return True, "", True
+
+
+def first_bad_band(scores: list[float]) -> int | None:
+    """Given how well each band of a picture matches its preview (low is good), the first band
+    that does not belong, or None. One band far worse than the picture's typical band fails it.
+    So does a large part of the picture being far worse than its best parts: when most of a
+    picture is wrong, "typical" is itself wrong, and only the good part can be the yardstick."""
+    if not scores:
+        return None
+    med, worst = float(np.median(scores)), max(scores)
+    if worst > max(10.0, 3.0 * med):
+        return scores.index(worst)
+    if len(scores) >= 8:
+        bar = max(10.0, 4.0 * float(np.percentile(scores, 10)))
+        over = [i for i, v in enumerate(scores) if v > bar]
+        if len(over) >= len(scores) / 4:
+            return over[0]
+    return None
 
 
 def pixel_audit(data: bytes, info) -> bool | None:
@@ -211,7 +227,7 @@ def pixel_audit(data: bytes, info) -> bool | None:
         if yy.std() > 6:
             pen = 8 * max(0.0, 0.85 - float((yx * yy).sum() / np.sqrt((yx ** 2).sum() * (yy ** 2).sum() + 1e-6)))
         scores.append(cm + pen)
-    return not scores or max(scores) <= max(10.0, 3.0 * float(np.median(scores)))
+    return first_bad_band(scores) is None
 
 
 def _workers() -> int:

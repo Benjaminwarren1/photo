@@ -311,6 +311,18 @@ class Rebuilder:
                 commit(w, nx, vol.cluster(nx))
             return finished(w)
 
+        def tail_fits(w: _Work, b: _Work) -> bool:
+            """A finish that decodes cleanly to the last block is strong evidence, but not proof:
+            another photo's data can do it. The picture it makes must also look like this photo,
+            piece by piece, by the photo's own standard. An average over the whole tail is not
+            enough, because a preview that is mostly dark forgives almost anything on average."""
+            new = (b.scores[len(w.scores):] if has_preview else b.seams[len(w.seams):])
+            if len(new) < 2:
+                return True
+            bar = CEILING * lim_of(w)
+            over = sum(1 for v in new if v > bar)
+            return over <= max(1, len(new) // 10)
+
         def advance(w: _Work) -> None:
             searches = 0
             while w.stream.status == ST_NEED_DATA:
@@ -430,7 +442,7 @@ class Rebuilder:
                     for sc, c in tries:
                         b = w.fork()
                         commit(b, c, vol.cluster(c))
-                        if run_on(b):
+                        if run_on(b) and tail_fits(w, b):
                             dcv = b.stream.dc[m0:b.stream.mcus]
                             ps, ss = assess(w, dcv, m0)
                             whole = ps if has_preview else ss

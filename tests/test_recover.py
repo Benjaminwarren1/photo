@@ -343,3 +343,31 @@ def test_drive_with_a_format_the_tool_cannot_read_is_searched_anyway(tmp_path, f
     assert found >= 0.9 * len(intact) and found >= 10, f"{found} of {len(intact)}"
     if folders_survive:
         assert any(p.name.startswith("IMG_") for p in files), "names from the old folders were not used"
+
+
+def test_final_check_fails_a_photo_whose_larger_part_is_another_picture():
+    """Seen on a real card: the top 40% of one photo joined to data that decoded cleanly to
+    the end but showed something else. With most of the picture wrong, the wrong part must
+    not become the yardstick."""
+    import io
+    from PIL import Image
+    from photorecover.recover import audit_jpeg, first_bad_band
+    from photorecover.synth.photos import _exif_with_thumbnail, draw_scene
+    real, other = draw_scene(71, 1200, 1600), draw_scene(72, 1200, 1600, dark=True)
+    th = real.copy()
+    th.thumbnail((120, 160), Image.BILINEAR)
+    tb = io.BytesIO()
+    th.save(tb, "JPEG", quality=75)
+
+    def photo(im):
+        out = io.BytesIO()
+        im.save(out, "JPEG", quality=88, exif=_exif_with_thumbnail(tb.getvalue()))
+        return out.getvalue()
+
+    assert audit_jpeg(photo(real))[0]
+    mixed = real.copy()
+    mixed.paste(other.crop((0, 640, 1200, 1600)), (0, 640))
+    ok, note, _ = audit_jpeg(photo(mixed))
+    assert not ok and "preview" in note
+    assert first_bad_band([2.0] * 9 + [30.0] * 15) == 9
+    assert first_bad_band([1.0] * 6 + [5.0] * 18) is None      # plain sky above busy ground is one picture
