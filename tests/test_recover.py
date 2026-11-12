@@ -405,3 +405,26 @@ def test_card_reformatted_then_used_again_gives_back_both_layers(tmp_path, new_p
     found = sum(t.sha256 in got for t in intact)
     assert found >= 0.9 * len(intact) and found >= 10, f"{found} of {len(intact)} older photos"
     assert any("ET_0" in p.name for p in files), "the newer photos lost their names"
+
+
+def test_overwritten_photo_is_not_saved_as_part_of_the_photo_that_replaced_it(tmp_path):
+    """Seen on a real card: a deleted photo's space was reused by a later, bigger photo that begins
+    at the same place. Its folder entry survives, but what is there now is the later photo."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    b = FatBuilder(64, 16, 4096)
+    b.mkdir("DCIM")
+    b.write("DCIM/KEEP_0.JPG", make_photo(80, 800, 600))
+    first = b.next_free
+    gone = b.write("DCIM/GONE.JPG", make_photo(81, 1024, 768))
+    b.delete("DCIM/GONE.JPG")
+    b.next_free = first
+    later = b.write("DCIM/LATER.JPG", make_photo(82, 1600, 1200))
+    assert later.clusters[0] == gone.clusters[0] and len(later.clusters) > len(gone.clusters)
+    b.delete_all()
+    rec = run(tmp_path, b)
+    check(rec, b, tmp_path, expect_all_recoverable=False)
+    it = next(i for i in rec.items if i.size == gone.size)
+    assert it.grade == "Not recoverable" and not it.saved_as, (it.grade, it.note, it.saved_as)
+    assert "different file" in it.note
+    assert not list((tmp_path / "out").glob("Recovered - Partial/**/*ONE*"))

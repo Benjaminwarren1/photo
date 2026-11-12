@@ -528,6 +528,15 @@ class Recovery:
             still = []
             for k, it in enumerate(pending):
                 self.progress = (k, len(pending))
+                if vol.valid(it.start) and not avail[it.start]:
+                    # Its first cluster has since been proved to belong to another file, so this
+                    # folder entry is out of date. What starts there is that file, not this one.
+                    now = next((o for o in items if o.chain and o is not it and it.start in o.chain[:1]), None) \
+                        or next((o for o in items if o.chain and o is not it and it.start in o.chain), None)
+                    it.note = ("its space now holds a different file" +
+                               (f" ({now.name})" if now is not None and now.name else "") + ", saved after this one was deleted")
+                    it._last = None
+                    continue
                 # First time round each next piece is sought only near the last one. On a real,
                 # much-used card it was within reach there for 998 joins in 1000; the second time
                 # round, with the easy photos out of the way, the whole card is searched.
@@ -640,7 +649,7 @@ class Recovery:
             self.items = newer.items + items
             self.problems += newer.problems
         self.progress = None
-        self.summary = dict(tool=f"photorecover {__version__}", filesystem=vol.kind,
+        self.summary = dict(tool=f"photorecover {__version__}", filesystem=(f"{newer.vol.kind} now, and {vol.kind}" if newer is not None else vol.kind),
                             cluster_size=cl, clusters=vol.ncl, card_in_use=round(float(used_fraction), 3),
                             files_listed=len(items), counts=self._counts(), seconds=round(time.time() - t0, 1),
                             fast_decoder=jpeg.HAVE_C, problems=self.problems[:50],
