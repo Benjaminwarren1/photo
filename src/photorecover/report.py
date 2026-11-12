@@ -34,7 +34,9 @@ def write_html(path: Path, summary: dict, rows: list[dict]) -> None:
            "The card image was only read, never changed.</small></p>",
            ("<p>This card had been reformatted with different settings. The files below were read using the "
             f"layout the card had before ({summary['old_layout']['cluster_size'] // 1024 or 1} KB blocks), "
-            "worked out from what is still on it.</p>") if summary.get("old_layout") else "",
+            "worked out from what is still on it."
+            + (f" {summary['since_format']} files deleted since that format were looked for first, in the card's current layout."
+               if summary.get("since_format") else "") + "</p>") if summary.get("old_layout") else "",
            (f"<p>This drive has {e(summary['unreadable'])}, so its folders could not be read. The drive itself was "
             "searched for photos instead. That finds photos whether or not they were deleted, so some of what is "
             "below may still be on the drive in the normal way, and original file names are not known.</p>")

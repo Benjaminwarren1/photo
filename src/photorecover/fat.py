@@ -33,6 +33,7 @@ class Entry:
     path: str = ""            # folder path, best effort
     mtime: tuple | None = None
     contiguous: bool = False  # exFAT only: recorded as one unbroken run
+    in_tree: bool = False     # listed in a folder that the current file system still reaches from its root
 
     @property
     def ext(self) -> str:
@@ -258,6 +259,7 @@ class FatVolume:
             seen_clusters.add(c)
             for e in ents:
                 e.path = path
+                e.in_tree = True
                 if e.short in (".", ".."):
                     continue
                 if not e.deleted:

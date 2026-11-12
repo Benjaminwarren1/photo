@@ -371,3 +371,37 @@ def test_final_check_fails_a_photo_whose_larger_part_is_another_picture():
     assert not ok and "preview" in note
     assert first_bad_band([2.0] * 9 + [30.0] * 15) == 9
     assert first_bad_band([1.0] * 6 + [5.0] * 18) is None      # plain sky above busy ground is one picture
+
+
+@pytest.mark.parametrize("new_photos", [10, 60])
+def test_card_reformatted_then_used_again_gives_back_both_layers(tmp_path, new_photos):
+    """Seen on a real card: formatted with new settings, used again, and those newer photos
+    deleted. The newer photos are listed in the format the card has now; the older ones can only
+    be read the way the card used to be laid out. Both must come back, whichever layer is bigger."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    old = used_card(fat_type=16, cluster_size=16384, size_mb=128, base_cluster=1500, folder_at_base=True)
+    old.delete_all()
+    new = FatBuilder(old.size >> 20, 32, 4096)
+    front = new.data_off + new.cl
+    new.img[front:] = old.tobytes()[front:]
+    new.mkdir("DCIM/Camera")
+    for k in range(new_photos):
+        new.write(f"DCIM/Camera/PET_{k:03d}.JPG", make_photo(7000 + k, 800, 600))
+    new.delete_all()
+    used_to = max(new.cluster_off(max(t.clusters)) for t in new.history) + new.cl
+    img = tmp_path / "card.img"
+    new.save(img)
+    rec = Recovery(img, tmp_path / "out")
+    rec.run()
+    assert rec.summary["old_layout"] == dict(cluster_size=16384, data_offset=old.data_off)
+    assert rec.summary["since_format"] >= new_photos
+    files = [p for p in (tmp_path / "out" / FOLDER_OK).rglob("*") if p.is_file()]
+    got = {hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+    good = {t.sha256 for t in old.history} | {t.sha256 for t in new.history}
+    assert not [p for p in files if hashlib.sha256(p.read_bytes()).hexdigest() not in good], "something wrong was delivered"
+    assert all(t.sha256 in got for t in new.history), "photos deleted since the format did not all come back"
+    intact = [t for t in old.history if not t.overwritten and old.cluster_off(min(t.clusters)) >= used_to]
+    found = sum(t.sha256 in got for t in intact)
+    assert found >= 0.9 * len(intact) and found >= 10, f"{found} of {len(intact)} older photos"
+    assert any("ET_0" in p.name for p in files), "the newer photos lost their names"

@@ -123,49 +123,38 @@ def _votes(entries: list[Entry], sigs: dict[str, np.ndarray], total_sectors: int
     return len(want), out
 
 
+def _explained(vol, e: Entry) -> bool:
+    """Does this folder entry point, in the layout the card has now, at a file of its kind?"""
+    o, magic = MAGIC[_kind(e)]
+    tries = [e.start]
+    if getattr(vol, "fat_bits", 0) == 32:     # deleting on FAT32 often zeroes the high half
+        tries += [(e.start & 0xFFFF) | (hi << 16) for hi in range((vol.max_cluster >> 16) + 1)]
+    return any(vol.valid(c) and bytes(vol.cluster(c)[o:o + len(magic)]) == magic for c in tries)
+
+
 def find_old_layout(vol: FatVolume, entries: list[Entry], log=None):
-    """If the card's surviving folders belong to an earlier layout, returns a volume
-    for that layout; otherwise None. `entries` is what the current layout found."""
-    m = vol.m
-    total = len(m) // SECTOR
-
-    def hits_now() -> tuple[int, int]:
-        n = ok = 0
-        for e in lost:
-            k = _kind(e)
-            if e.is_dir or e.size <= 0 or not k:
-                continue
-            n += 1
-            o, magic = MAGIC[k]
-            tries = [e.start]
-            if getattr(vol, "fat_bits", 0) == 32:     # deleting on FAT32 often zeroes the high half
-                tries += [(e.start & 0xFFFF) | (hi << 16) for hi in range((vol.max_cluster >> 16) + 1)]
-            if any(vol.valid(c) and bytes(vol.cluster(c)[o:o + len(magic)]) == magic for c in tries):
-                ok += 1
-        return n, ok
-
-    lost = [e for e in entries if not e.live]
-    n_now, ok_now = hits_now()
-    if n_now:
-        if ok_now * 2 >= n_now:
-            return None                     # the layout the card has now explains its files
-    elif not _looks_reformatted(vol):
-        return None
-    if log:
-        log("The card's folders do not match its current format; working out how it was laid out before")
-    return _infer(m, vol, ok_now, log)
+    """If folders survive on the card that belong to an earlier layout (it was reformatted with
+    different settings), returns a volume for that layout; otherwise None. Those folders need not
+    be visible in the current layout at all, so the whole card is looked over, not just `entries`."""
+    return _infer(vol.m, vol, log)
 
 
-def _infer(m, vol: FatVolume | None, ok_now: int = 0, log=None):
+def _infer(m, vol: FatVolume | None, log=None):
     """Work out an earlier layout from the folders and photo starts found on the card."""
     total = len(m) // SECTOR
     sigs = _signature_maps(m)
-    old_entries = _Sectors(m).scan_entries()
+    # Only files that the current layout cannot account for say anything about an older one.
+    old_entries = [e for e in _Sectors(m).scan_entries()
+                   if not e.is_dir and e.size > 0 and _kind(e) and (vol is None or not _explained(vol, e))]
     testable, votes = _votes(old_entries, sigs, total)
-    if testable:
+    if vol is not None:
+        votes.pop((vol.cl, vol.data_off), None)
+    if testable and votes:
         (cs, off), best = max(votes.items(), key=lambda kv: kv[1])
-        if best >= max(4, 0.15 * testable) and best > 2 * ok_now and (vol is None or (cs, off) != (vol.cl, vol.data_off)):
+        if best >= max(4, 0.3 * testable) and _same_files(m, old_entries, cs, off, best, testable):
             if log:
+                if vol is not None:
+                    log("The card has folders from before it was last formatted; working out how it was laid out then")
                 log(f"Found the old layout: {cs // 1024 or cs} {'KB' if cs >= 1024 else 'byte'} blocks; "
                     f"{best} of {testable} listed files start exactly where it says")
             return LegacyFatVolume(m, cs, off, vol)
@@ -181,6 +170,24 @@ def _infer(m, vol: FatVolume | None, ok_now: int = 0, log=None):
                         else f"Photos on this drive start every {cs // 1024 or cs} {'KB' if cs >= 1024 else 'bytes'}; using that to find them")
                 return LegacyFatVolume(m, cs, off, vol)
     return None
+
+
+def _same_files(m, entries: list[Entry], cs: int, off: int, best: int, testable: int) -> bool:
+    """A photo starting where a layout says is not yet proof: on a card of evenly spaced photos
+    a wrong layout lands on the start of *other* photos. The right layout finds the very file
+    each entry describes, so a photo's end marker sits exactly where its recorded size puts it."""
+    hits = exact = 0
+    for e in entries:
+        if _kind(e) != "jpg" or e.start < 2:
+            continue
+        o = off + (e.start - 2) * cs
+        if o + e.size > len(m) or bytes(m[o:o + 3]) != b"\xff\xd8\xff":
+            continue
+        hits += 1
+        exact += bytes(m[o + e.size - 2:o + e.size]) == b"\xff\xd9"
+    if hits >= 4:
+        return exact >= max(3, 0.25 * hits)
+    return best >= 0.8 * testable       # no photos to test with: only a near-unanimous vote will do
 
 
 class UnreadableVolume(LegacyFatVolume):
@@ -215,7 +222,7 @@ def open_unreadable(m, log=None) -> UnreadableVolume:
     what = _format_name(m)
     if log:
         log(f"This drive has {what}. Its folders cannot be read, so the drive itself is searched for photos")
-    found = _infer(m, None, 0, log)
+    found = _infer(m, None, log)
     cs, off = (found.cl, found.data_off) if found is not None else (4096, 0)
     v = UnreadableVolume(m, cs, off)
     v.what = what

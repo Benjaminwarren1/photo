@@ -255,7 +255,9 @@ def _ahead(jobs, fn, workers: int):
 
 
 class Recovery:
-    def __init__(self, image, out_dir=None, log=None):
+    def __init__(self, image, out_dir=None, log=None, _only=None, _taken=None):
+        self._only = _only          # internal: recover just these folder entries, and do not scan for more
+        self._shared_taken = _taken
         self.out = Path(out_dir) if out_dir else None
         say = log or (lambda msg: None)
 
@@ -309,6 +311,19 @@ class Recovery:
         hits = [c for hi in range((vol.max_cluster >> 16) + 1) if fits(c := lo | (hi << 16))]
         return hits[0] if len(hits) == 1 else e.start
 
+    def _starts_right(self, e: Entry) -> bool:
+        """Does the cluster this entry points to, in the card's current layout, begin the way
+        a file of its type begins?"""
+        ext, vol = e.ext, self.vol
+        c = self._resolve_start(e, ext)
+        if not vol.valid(c):
+            return False
+        head = vol.cluster(c)[:16]
+        if ext in JPEG_EXT:
+            return head[:3] == b"\xff\xd8\xff"
+        sig = SIGNATURES.get(ext)
+        return bool(sig and sig[1] and head[sig[0]:sig[0] + len(sig[1])] == sig[1])
+
     def _photo_starts(self, avail: np.ndarray) -> list[int]:
         """Unclaimed clusters that begin the way a JPEG begins."""
         vol, out = self.vol, []
@@ -323,20 +338,46 @@ class Recovery:
     def run(self) -> dict:
         t0 = time.time()
         vol = self.vol
-        self.log("Reading the card's folders, including deleted ones")
-        entries = vol.scan_entries()
         self.old_layout = None
-        try:
-            from .legacy import find_old_layout
-            old = None if self.unreadable else find_old_layout(vol, entries, self.log)
-        except Exception as e:  # noqa: BLE001
-            old = None
-            self.problems.append(f"looking for an older layout: {type(e).__name__}: {e}")
-        if old is not None:
-            # the card was reformatted with different settings: read it the way it used to be
-            self.old_layout = dict(cluster_size=old.cl, data_offset=old.data_off)
-            self.vol = vol = old
+        newer: Recovery | None = None
+        if self._only is not None:
+            entries, old = self._only, None
+        else:
+            self.log("Reading the card's folders, including deleted ones")
             entries = vol.scan_entries()
+            try:
+                from .legacy import find_old_layout
+                old = None if self.unreadable else find_old_layout(vol, entries, self.log)
+            except Exception as e:  # noqa: BLE001
+                old = None
+                self.problems.append(f"looking for an older layout: {type(e).__name__}: {e}")
+        if old is not None:
+            # The card was reformatted with different settings. Anything deleted since then is
+            # listed in the format it has now, so that layer is recovered first, as it stands...
+            mine = [e for e in entries if not e.live and not e.is_dir and e.size > 0
+                    and (e.in_tree or self._starts_right(e))]
+            if mine:
+                self.log(f"Recovering {len(mine)} files deleted since the card was last formatted")
+                newer = Recovery(vol.m, self.out, None, _only=mine, _taken=set())
+                newer.vol, newer.log, newer.always_ask = vol, (lambda msg: None), self.always_ask
+                try:
+                    newer.run()
+                except Exception as e:  # noqa: BLE001
+                    self.problems.append(f"files deleted since the last format: {type(e).__name__}: {e}")
+                    newer = None
+            # ... and then everything older is read the way the card used to be laid out.
+            self.old_layout = dict(cluster_size=old.cl, data_offset=old.data_off)
+            if newer is not None:
+                for it in newer.items:
+                    it._owner = newer
+                    if it.saved_as.startswith(FOLDER_OK + "/"):
+                        for c in it.chain:
+                            if c >= 2:
+                                o = vol.data_off + (c - 2) * vol.cl
+                                old._claim(o, o + vol.cl)
+            seen_now = {(e.short, e.size, e.mtime) for e in mine}
+            self.vol = vol = old
+            entries = [e for e in vol.scan_entries() if (e.short, e.size, e.mtime) not in seen_now]
         blank = vol.blank_clusters()
         allocated = vol.allocated()
         avail = ~allocated & ~blank
@@ -524,7 +565,7 @@ class Recovery:
                 it.note = "its space was reused by a later file"
 
         # Pass 3: photos with no folder entry left at all.
-        heads = self._photo_starts(avail)
+        heads = self._photo_starts(avail) if self._only is None else []
         if heads:
             self.log(f"Looking at {len(heads)} photo starts that have no folder entry")
         found: list[Item] = []
@@ -592,7 +633,12 @@ class Recovery:
 
         self.items = items
         self._rb, self._avail = rb, avail
+        if newer is not None:
+            self._shared_taken = newer._taken
         self._deliver()
+        if newer is not None:
+            self.items = newer.items + items
+            self.problems += newer.problems
         self.progress = None
         self.summary = dict(tool=f"photorecover {__version__}", filesystem=vol.kind,
                             cluster_size=cl, clusters=vol.ncl, card_in_use=round(float(used_fraction), 3),
@@ -601,7 +647,8 @@ class Recovery:
                             steps=[[m, round((self.steps[i + 1][1] if i + 1 < len(self.steps) else time.time()) - t, 1)]
                                    for i, (m, t) in enumerate(self.steps)],
                             old_layout=self.old_layout, unreadable=self.unreadable)
-        if self.out:
+        self.summary["since_format"] = len(newer.items) if newer is not None else 0
+        if self.out and self._only is None:
             self._write_report()
         return self.summary
 
@@ -622,6 +669,8 @@ class Recovery:
         around the join, as JPEG bytes, plus the photo's own preview if it has one."""
         from PIL import ImageFile
         it = self.items[index]
+        if getattr(it, "_owner", self) is not self:
+            return it._owner.review_images(it._owner.items.index(it), width)
         r: Result = it._last
         vol, info = self.vol, r.info
         rows_done = (r.percent / 100.0) * info.height
@@ -660,6 +709,8 @@ class Recovery:
         """Apply a choice. None means "none of these": the photo stays partial.
         Returns the photo's new grade."""
         it = self.items[index]
+        if getattr(it, "_owner", self) is not self:
+            return it._owner.review_pick(it._owner.items.index(it), cluster)
         r: Result = it._last
         if cluster is None:
             it.grade, it.candidates = GRADE_PARTIAL, []
@@ -729,7 +780,7 @@ class Recovery:
     def _deliver(self) -> None:
         """The mandatory final audit, then write files. Nothing reaches Recovered
         without passing the audit on the exact bytes being written."""
-        self._taken: set[str] = set()
+        self._taken: set[str] = self._shared_taken if self._shared_taken is not None else set()
         todo = [it for it in self.items if it.chain]
         if todo:
             self.log(f"Checking every recovered file once more and saving {len(todo)} files")
