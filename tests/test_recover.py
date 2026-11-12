@@ -674,3 +674,53 @@ def test_card_smaller_than_it_claims_is_flagged(tmp_path, how):
         edge = used[len(used) // 2]
         d[edge:] = bytes(len(d) - edge)
     assert ("fake_capacity", False) in _kinds(tmp_path, bytes(d))
+
+
+@pytest.mark.parametrize("table", ["two-primary", "logical", "gpt"])
+def test_every_partition_on_a_card_is_recovered(tmp_path, table):
+    """Cards from consoles, dashcams and small computers, and cards split by hand, hold more than
+    one partition. Photos deleted from any of them come back, under either kind of partition table."""
+    import struct
+    a = used_card(fat_type=16, cluster_size=8192, size_mb=64, seed=81, photos=8, width=800, height=600)
+    b = used_card(fat_type="exfat" if table != "gpt" else 32, cluster_size=4096, size_mb=64, seed=82, photos=8,
+                  width=800, height=600)
+    a.delete_all()
+    b.delete_all()
+    va, vb = a.tobytes()[a.part:], b.tobytes()[b.part:]
+    gap = 2048 * 512
+    at_a, at_b = gap, gap + len(va) + gap
+    d = bytearray(at_b + len(vb) + gap)
+    d[at_a:at_a + len(va)] = va
+    d[at_b:at_b + len(vb)] = vb
+    entry = lambda t, lba, n: struct.pack("<B3sB3sII", 0, bytes(3), t, bytes(3), lba, n)
+    d[510:512] = b"\x55\xaa"
+    if table == "two-primary":
+        d[446:462] = entry(0x06, at_a // 512, len(va) // 512)
+        d[462:478] = entry(0x07, at_b // 512, len(vb) // 512)
+    elif table == "logical":
+        ext = at_b - gap                     # the container starts one gap before the second volume
+        d[446:462] = entry(0x06, at_a // 512, len(va) // 512)
+        d[462:478] = entry(0x0F, ext // 512, (len(d) - ext) // 512)
+        d[ext + 446:ext + 462] = entry(0x07, gap // 512, len(vb) // 512)
+        d[ext + 510:ext + 512] = b"\x55\xaa"
+    else:
+        d[446:462] = entry(0xEE, 1, len(d) // 512 - 1)
+        d[512:520] = b"EFI PART"
+        d[512 + 72:512 + 88] = struct.pack("<QII", 2, 128, 128)
+        for k, (at, v) in enumerate(((at_a, va), (at_b, vb))):
+            d[1024 + k * 128:1152 + k * 128] = (b"\x28\x73\x2a\xc1" + bytes(12) + bytes([k + 1]) * 16
+                                                + struct.pack("<QQ", at // 512, (at + len(v)) // 512 - 1) + bytes(80))
+    img = tmp_path / "card.img"
+    img.write_bytes(bytes(d))
+    rec = Recovery(img, tmp_path / "out")
+    rec.run()
+    assert rec.summary["partitions"] == 2 and not rec.summary["problems"], rec.summary["problems"]
+    files = [p for p in (tmp_path / "out" / FOLDER_OK).rglob("*") if p.is_file()]
+    got = {hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+    assert len(got) == len(files), "the same file was saved twice"
+    truth = a.history + b.history
+    assert not got - {t.sha256 for t in truth}, "something wrong was delivered"
+    for part in (a, b):
+        want = [t for t in part.history if t.recoverable]
+        assert want and all(t.sha256 in got for t in want), f"{sum(t.sha256 in got for t in want)} of {len(want)}"
+    assert "partition 2" in (tmp_path / "out" / "report.html").read_text()

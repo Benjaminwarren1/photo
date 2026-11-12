@@ -296,8 +296,9 @@ def _ahead(jobs, fn, workers: int):
 
 
 class Recovery:
-    def __init__(self, image, out_dir=None, log=None, _only=None, _taken=None):
+    def __init__(self, image, out_dir=None, log=None, _only=None, _taken=None, _vol=None):
         self._only = _only          # internal: recover just these folder entries, and do not scan for more
+        self._part = _vol is not None   # internal: one more partition of a card already being recovered
         self._shared_taken = _taken
         self.out = Path(out_dir) if out_dir else None
         say = log or (lambda msg: None)
@@ -310,7 +311,7 @@ class Recovery:
             say(msg)
         self.log = _log
         try:
-            self.vol = open_volume(image)
+            self.vol = _vol if _vol is not None else open_volume(image)
             self.unreadable = ""
             if getattr(self.vol, "repaired", False):
                 self.log("The start of this card is damaged, which is why a computer says it needs formatting. "
@@ -408,7 +409,7 @@ class Recovery:
         return out
 
     def run(self) -> dict:
-        t0 = time.time()
+        t0 = self._t0 = time.time()
         vol = self.vol
         self.old_layout = None
         newer: Recovery | None = None
@@ -427,7 +428,7 @@ class Recovery:
             self._existing = [e for e in entries if e.live and not e.is_dir and e.size > 0 and not e.deleted]
             try:
                 from .legacy import find_old_layout
-                old = None if self.unreadable else find_old_layout(vol, entries, self.log)
+                old = None if self.unreadable or self._part else find_old_layout(vol, entries, self.log)
             except Exception as e:  # noqa: BLE001
                 old = None
                 self.problems.append(f"looking for an older layout: {type(e).__name__}: {e}")
@@ -826,10 +827,56 @@ class Recovery:
             self.summary["problems"] = self.problems[:50]
         self.summary["damaged_start"] = bool(getattr(self.vol if newer is None else newer.vol, "repaired", False))
         self.summary["unreadable_bytes"] = sum(b - a for a, b in self.blank_ranges)
-        self.summary["findings"] = self._findings() if self._only is None else []
-        if self.out and self._only is None:
+        if self._only is None and not self._part:
+            self._other_partitions()
+        self.summary["findings"] = self._findings() if self._only is None and not self._part else []
+        if self.out and self._only is None and not self._part:
             self._write_report()
         return self.summary
+
+    def _other_partitions(self) -> None:
+        """A card can hold more than one partition (cards from game consoles, dashcams, single-board
+        computers, or split by hand). Each one this tool can read is recovered like the first."""
+        from .exfat import ExFatVolume
+        from .fat import FatVolume, all_volumes
+        first = self._first_vol
+        if self.unreadable or not hasattr(first, "part"):
+            return
+        others = [(kind, off) for kind, off in all_volumes(first.m) if off != first.part]
+        self.summary["partitions"] = 1 + len(others)
+        for n, (kind, off) in enumerate(others, 2):
+            try:
+                vol = ExFatVolume(first.m, off) if kind == "exfat" else FatVolume(first.m, off)
+                vol.survey = getattr(first, "survey", None)
+                self.log(f"Partition {n} of {1 + len(others)} on this card")
+                sub = Recovery(first.m, self.out, None, _taken=self._taken, _vol=vol)
+                sub.log, sub.always_ask, sub.include_existing = self.log, self.always_ask, self.include_existing
+                sub.blank_ranges = self.blank_ranges
+                sub.run()
+            except Exception as e:  # noqa: BLE001
+                self.problems.append(f"partition {n}: {type(e).__name__}: {e}")
+                continue
+            for it in sub.items:
+                if getattr(it, "_owner", None) is None:
+                    it._owner = sub
+                it.folder = f"partition {n}/{it.folder}".rstrip("/")
+            self.items += sub.items
+            self.problems += sub.problems
+            self._existing += sub._existing
+            a, b = self.summary.get("still_on_card"), sub.summary.get("still_on_card")
+            if a and b:
+                for k in ("files", "photos", "videos", "other", "bytes"):
+                    a[k] += b[k]
+                a["saved"] = a["saved"] or b["saved"]
+                for name, cnt in b["folders"].items():
+                    a["folders"].setdefault(f"partition {n}: {name}", cnt)
+            elif b:
+                self.summary["still_on_card"] = b
+        if others:
+            self.summary["counts"] = self._counts()
+            self.summary["files_listed"] = len(self.items)
+            self.summary["problems"] = self.problems[:50]
+            self.summary["seconds"] = round(time.time() - self._t0, 1)
 
     def _findings(self) -> list[dict]:
         """Anything that makes this a card no tool can recover from: encrypted, wiped, or not the size it says."""

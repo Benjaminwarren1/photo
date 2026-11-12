@@ -41,6 +41,9 @@ def write_html(path: Path, summary: dict, rows: list[dict]) -> None:
                if summary.get("since_format") else "") + "</p>") if summary.get("old_layout") else "",
            "".join(f"<p class=warn><b>{'Nothing can be recovered from this card.' if f['sure'] else 'Please read this first.'}</b> "
                    f"{e(f['text'])}</p>" for f in summary.get("findings") or []),
+           (f"<p>This card is divided into {summary['partitions']} partitions (separate areas, each with its own folders). "
+            "All of them were searched. Files from the second one onward are marked with their partition.</p>")
+           if summary.get("partitions", 1) > 1 else "",
            _still(summary.get("still_on_card"), e),
            ("<p>The start of this card was damaged, which is what makes a computer say the card needs formatting. "
             "A spare copy of the card's layout was found further in and used to read it. Do not format the card.</p>")
@@ -62,7 +65,8 @@ def write_html(path: Path, summary: dict, rows: list[dict]) -> None:
         where = f"<br><small>{e(r['saved_as'])}</small>" if r["saved_as"] else ""
         if r.get("filled_as"):
             where += f"<br><small>with the rest filled in from its preview: {e(r['filled_as'])}</small>"
-        out.append(f"<tr><td>{e(r['name'])}{where}</td><td class=g{ORDER.index(r['grade'])}>{e(grade)}</td>"
+        part = r["folder"].split("/")[0] + ": " if r["folder"].startswith("partition ") else ""
+        out.append(f"<tr><td>{e(part + r['name'])}{where}</td><td class=g{ORDER.index(r['grade'])}>{e(grade)}</td>"
                    f"<td>{e(r['method'])}</td><td>{e(r['note'])}</td></tr>")
     out.append("</table>")
     if summary.get("steps"):

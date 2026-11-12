@@ -52,17 +52,77 @@ def _looks_like_bpb(b: bytes) -> bool:
     return bps in (512, 1024, 2048, 4096) and spc in (1, 2, 4, 8, 16, 32, 64, 128) and res >= 1 and nfat in (1, 2)
 
 
+def gpt_partitions(m) -> list[tuple[bytes, int, int, str]]:
+    """(type, first byte, length in bytes, name) for each entry of a GPT partition table."""
+    h = bytes(m[SECTOR:SECTOR + 92])
+    if len(h) < 92 or h[:8] != b"EFI PART":
+        return []
+    lba, count, size = struct.unpack_from("<QII", h, 72)
+    out = []
+    if not (128 <= size <= 1024 and count <= 256):
+        return out
+    table = bytes(m[lba * SECTOR:lba * SECTOR + count * size])
+    for i in range(len(table) // size):
+        e = table[i * size:(i + 1) * size]
+        if e[:16] == bytes(16):
+            continue
+        first, last = struct.unpack_from("<QQ", e, 32)
+        if first and last >= first and first * SECTOR < len(m):
+            name = e[56:128].decode("utf-16-le", "replace").split("\0")[0]
+            out.append((e[:16], first * SECTOR, (last - first + 1) * SECTOR, name))
+    return out
+
+
+def partition_starts(m) -> list[int]:
+    """Where every partition begins, from either kind of partition table (the older MBR, with its
+    chain of extra "logical" partitions, or GPT)."""
+    out: list[int] = []
+    s0 = bytes(m[0:SECTOR])
+    if _looks_like_bpb(s0) or s0[3:11] == b"EXFAT   ":       # no table: the volume fills the card
+        return out
+    if len(s0) == SECTOR and s0[510:512] == b"\x55\xaa":
+        for i in range(4):
+            ptype, lba, count = struct.unpack_from("<4xB3xII", s0, 446 + i * 16)
+            if not ptype or not lba or lba * SECTOR + SECTOR > len(m):
+                continue
+            if ptype in (0x05, 0x0F, 0x85):                     # a container of logical partitions
+                base = at = lba
+                for _ in range(64):
+                    b = bytes(m[at * SECTOR:(at + 1) * SECTOR])
+                    if len(b) < SECTOR or b[510:512] != b"\x55\xaa":
+                        break
+                    t1, l1 = struct.unpack_from("<4xB3xI", b, 446)
+                    t2, l2 = struct.unpack_from("<4xB3xI", b, 462)
+                    if t1 and l1 and (at + l1) * SECTOR < len(m):
+                        out.append((at + l1) * SECTOR)
+                    if not t2 or not l2 or (base + l2) * SECTOR >= len(m) or base + l2 <= at:
+                        break
+                    at = base + l2
+            elif ptype != 0xEE:
+                out.append(lba * SECTOR)
+    out += [p[1] for p in gpt_partitions(m)]
+    return sorted(set(out))
+
+
 def find_partitions(m) -> list[int]:
-    """Byte offsets of candidate FAT volumes: a volume at offset 0, or MBR partitions."""
+    """Byte offsets of candidate FAT volumes: a volume at offset 0, or one in a partition."""
     s0 = bytes(m[0:512])
     if _looks_like_bpb(s0) and s0[3:11] != b"EXFAT   ":
         return [0]
+    return partition_starts(m)
+
+
+def all_volumes(m) -> list[tuple[str, int]]:
+    """Every FAT or exFAT volume the partition table leads to: ("fat" or "exfat", where it starts)."""
     out = []
-    if s0[510:512] == b"\x55\xaa":
-        for i in range(4):
-            ptype, lba, count = struct.unpack_from("<4xB3xII", s0, 446 + i * 16)
-            if ptype and lba and lba * SECTOR + 512 <= len(m):
-                out.append(lba * SECTOR)
+    for off in sorted({0, *partition_starts(m)}):
+        b = bytes(m[off:off + SECTOR])
+        if len(b) < SECTOR or b[510:512] != b"\x55\xaa":
+            continue
+        if b[3:11] == b"EXFAT   ":
+            out.append(("exfat", off))
+        elif _looks_like_bpb(b):
+            out.append(("fat", off))
     return out
 
 

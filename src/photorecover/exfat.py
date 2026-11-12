@@ -23,20 +23,10 @@ def find_exfat(m) -> int | None:
 
     if is_boot(0):
         return 0
-    s0 = bytes(m[0:512])
-    if s0[510:512] == b"\x55\xaa":
-        for i in range(4):
-            ptype, lba = struct.unpack_from("<4xB3xI", s0, 446 + i * 16)
-            if ptype == 0xEE:                      # GPT: look through its partition entries
-                for k in range(128):
-                    o = 2 * SECTOR + k * 128
-                    if o + 48 > len(m):
-                        break
-                    (first,) = struct.unpack_from("<Q", m, o + 32)
-                    if first and is_boot(first * SECTOR):
-                        return first * SECTOR
-            elif ptype and lba and is_boot(lba * SECTOR):
-                return lba * SECTOR
+    from .fat import partition_starts
+    for off in partition_starts(m):
+        if is_boot(off):
+            return off
     return None
 
 

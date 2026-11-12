@@ -10,43 +10,16 @@ import struct
 
 import numpy as np
 
+from .fat import gpt_partitions, partition_starts
+
 SECTOR = 512
 
 ANDROID_EXPAND = bytes.fromhex("a41e3d19cab3e411b0751060 4b889dcf".replace(" ", ""))
 PHOTO_START = {"jpg": b"\xff\xd8\xff", "jpeg": b"\xff\xd8\xff", "png": b"\x89PN", "mp4": None, "heic": None}
 
 
-def gpt_partitions(m) -> list[tuple[bytes, int, int, str]]:
-    """(type, first byte, length in bytes, name) for each entry of a GPT partition table."""
-    h = bytes(m[SECTOR:SECTOR + 92])
-    if len(h) < 92 or h[:8] != b"EFI PART":
-        return []
-    lba, count, size = struct.unpack_from("<QII", h, 72)
-    out = []
-    if not (128 <= size <= 1024 and count <= 256):
-        return out
-    table = bytes(m[lba * SECTOR:lba * SECTOR + count * size])
-    for i in range(len(table) // size):
-        e = table[i * size:(i + 1) * size]
-        if e[:16] == bytes(16):
-            continue
-        first, last = struct.unpack_from("<QQ", e, 32)
-        if first and last >= first and first * SECTOR < len(m):
-            name = e[56:128].decode("utf-16-le", "replace").split("\0")[0]
-            out.append((e[:16], first * SECTOR, (last - first + 1) * SECTOR, name))
-    return out
-
-
 def _starts(m) -> list[int]:
-    out = [0]
-    s0 = bytes(m[0:SECTOR])
-    if s0[510:512] == b"\x55\xaa":
-        for i in range(4):
-            ptype, lba = struct.unpack_from("<4xB3xI", s0, 446 + i * 16)
-            if ptype and lba and lba * SECTOR < len(m):
-                out.append(lba * SECTOR)
-    out += [p[1] for p in gpt_partitions(m)]
-    return sorted(set(out))
+    return sorted({0, *partition_starts(m)})
 
 
 def locked_container(m) -> str:
