@@ -533,7 +533,9 @@ def test_files_in_an_unreadable_part_of_a_failing_card_are_never_passed_off_as_g
     assert not got & hit
     clear = [t for t in b.history if t.recoverable and t.sha256 not in hit]
     assert sum(t.sha256 in got for t in clear) >= len(clear) - 1
-    assert sum("could not be read" in i.note for i in rec.items) >= 1
+    for t in victims:
+        it = next(i for i in rec.items if (i.start, i.size) == (t.clusters[0], t.size))
+        assert "could not be read" in it.note and it.grade in ("Partial", "Not recoverable"), (it.grade, it.note)
     assert "failing" in (tmp_path / "out" / "report.html").read_text()
 
 

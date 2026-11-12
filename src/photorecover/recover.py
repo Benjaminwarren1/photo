@@ -440,6 +440,7 @@ class Recovery:
                 self.log(f"Recovering {len(mine)} files deleted since the card was last formatted")
                 newer = Recovery(vol.m, self.out, None, _only=mine, _taken=set())
                 newer.vol, newer.log, newer.always_ask = vol, (lambda msg: None), self.always_ask
+                newer.blank_ranges = self.blank_ranges
                 try:
                     newer.run()
                 except Exception as e:  # noqa: BLE001
@@ -839,11 +840,14 @@ class Recovery:
             return None
         kind = lambda e: "photos" if e.ext in PHOTO_EXT else "videos" if e.ext in VIDEO_EXT else "other"
         info = dict(files=len(live), photos=0, videos=0, other=0, bytes=sum(e.size for e in live), saved=False, folders={})
+        media: dict[str, int] = {}
         for e in live:
             info[kind(e)] += 1
             top = e.path or "(top folder)"
             info["folders"][top] = info["folders"].get(top, 0) + 1
-        info["folders"] = dict(sorted(info["folders"].items(), key=lambda kv: -kv[1])[:15])
+            media[top] = media.get(top, 0) + (kind(e) != "other")
+        # folders that hold photos and videos first: those are what the person needs to hear about
+        info["folders"] = dict(sorted(info["folders"].items(), key=lambda kv: (-media[kv[0]], -kv[1]))[:15])
         save = self.out and (self.include_existing or getattr(vol, "repaired", False))
         if not save:
             return info
@@ -1031,8 +1035,13 @@ class Recovery:
             for it in self.items:
                 if it.grade in (GRADE_PARTIAL, GRADE_REVIEW, GRADE_LOST) and it.size and hit.isdisjoint(it.chain) \
                         and not hit.isdisjoint(range(it.start, it.start + -(-it.size // vol.cl))):
-                    it.note = (it.note + "; " if it.note else "") + \
-                        "an area of the card that could not be read lies where this file was stored"
+                    if it.grade == GRADE_REVIEW:
+                        # nothing for a person to choose between: the next piece is simply unreadable
+                        it.grade, it.candidates, it.note = GRADE_PARTIAL, [], ""
+                    it.note = (it.note + "; " if it.note else "") + (
+                        "part of the card where this file is stored could not be read"
+                        + (f"; the picture is good down to about {it.percent:.0f}% and lost from there on"
+                           if it.kind == "jpeg" and it.chain else ""))
             for it in todo:
                 if not hit.isdisjoint(it.chain):
                     it.note = (it.note + "; " if it.note else "") + \

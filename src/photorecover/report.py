@@ -78,7 +78,8 @@ def _still(info, e) -> str:
     gb = info["bytes"] / 1e9
     size = f"{gb:.1f} GB" if gb >= 1 else f"{info['bytes'] / 1e6:.0f} MB"
     what = ", ".join(f"{info[k]} {k if k != 'other' else 'other files'}" for k in ("photos", "videos", "other") if info[k])
-    where = "; ".join(f"{e(name)} ({n})" for name, n in list(info["folders"].items())[:6])
+    shown = [(name, n) for name, n in info["folders"].items() if len(name) <= 40][:4]
+    where = "; ".join(f"{e(name)} ({n})" for name, n in shown) or "several folders"
     if info["saved"]:
         tail = "They have been copied into the folder <b>Still on the card</b>, exactly as they are."
     else:
