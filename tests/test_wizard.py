@@ -103,3 +103,20 @@ def test_copy_destination_is_checked_before_copying(tmp_path):
     assert "4 GB" in device.dest_problem(tmp_path, big, free=200 * 10**9, fs="FAT32")
     assert device.dest_problem(tmp_path, 2 * 10**9, free=200 * 10**9, fs="FAT32") is None
     assert device.dest_problem(tmp_path / "not yet made", 1000) is None
+
+
+@pytest.mark.parametrize("with_status", [False, True])
+def test_copy_command_takes_a_drive_by_the_name_the_drive_list_shows(tmp_path, monkeypatch, with_status):
+    import json
+    import os
+    from photorecover import cli
+    drives = tmp_path / "drives"
+    drives.mkdir()
+    (drives / "CARD7.img").write_bytes(os.urandom(300_000))
+    monkeypatch.setenv("PHOTORECOVER_FAKE_DRIVES", str(drives))
+    dest, status = tmp_path / "out" / "card.img", tmp_path / "status.json"
+    (tmp_path / "out").mkdir()
+    assert cli.main(["clone", "card7", str(dest)] + (["--status", str(status)] if with_status else [])) == 0
+    assert dest.read_bytes() == (drives / "CARD7.img").read_bytes()
+    if with_status:
+        assert json.loads(status.read_text())["state"] == "done"

@@ -69,40 +69,52 @@ def main(argv=None) -> int:
         return 0
     if a.cmd == "clone":
         from . import device
-        show = None if a.status else (lambda i: print(f"\r{i['done'] >> 20} MB", end="", flush=True))
-        if not a.status:
-            # a drive may be named the way "drives" lists it; and reading one needs administrator
-            # rights on Windows, which only the helper started below asks for
-            want = a.source.lower().replace("\\\\.\\", "")
+        quiet = bool(a.status)          # a status file means another program is watching, not a person
+        show = None if quiet else (lambda i: print(f"\r{i['done'] >> 20} MB", end="", flush=True))
+
+        def stop(message: str, error: str) -> int:
+            if quiet:
+                Path(a.status).write_text(json.dumps(dict(state="error", done=0, total=a.size or 0, bad_bytes=0,
+                                                          seconds=0.0, error=error, message=message)))
+            else:
+                print(message)
+            return 1
+
+        # A drive may be named the way "drives" lists it, with or without a status file.
+        want = a.source.lower().replace("\\\\.\\", "")
+        known = None
+        if not Path(a.source).is_file():
             known = next((d for d in device.list_drives()
                           if want in (d.id.lower(), d.path.lower().replace("\\\\.\\", ""))), None)
             if known is None and sys.platform == "win32" and want.startswith("physicaldrive") and want[13:].isdigit():
                 # the drive list could not be read (it comes from PowerShell); the name is still enough
                 known = device.Drive(f"PhysicalDrive{want[13:]}", rf"\\.\PhysicalDrive{want[13:]}", a.size or 0, "", True, False)
-            if known is not None:
-                a.source, a.size = known.path, a.size or known.size
-            why = device.dest_problem(Path(a.dest).parent, a.size)
-            if why:
-                print(why)
-                return 1
-            if known is not None and sys.platform == "win32" and not device.is_admin():
-                import tempfile
-                import time
-                status = Path(tempfile.gettempdir()) / f"photorecover-clone-{os.getpid()}.json"
-                device.start_clone(known, a.dest, status)
-                info = {}
-                while True:
-                    try:
-                        info = json.loads(status.read_text())
-                    except (OSError, ValueError):
-                        pass
-                    if info.get("state") in ("done", "error", "cancelled"):
-                        break
-                    show(info) if "done" in info else None
-                    time.sleep(0.5)
+        if known is not None:
+            a.source, a.size = known.path, a.size or known.size
+        why = device.dest_problem(Path(a.dest).parent, a.size)
+        if why:
+            return stop(why, "space")
+        # Reading a drive needs administrator rights on Windows, which only the helper started here asks for.
+        if known is not None and sys.platform == "win32" and not device.is_admin():
+            import tempfile
+            import time
+            status = Path(a.status) if quiet else Path(tempfile.gettempdir()) / f"photorecover-clone-{os.getpid()}.json"
+            device.start_clone(known, a.dest, status)
+            info = {}
+            while True:
+                try:
+                    info = json.loads(status.read_text())
+                except (OSError, ValueError):
+                    pass
+                if info.get("state") in ("done", "error", "cancelled"):
+                    break
+                if show and "done" in info:
+                    show(info)
+                time.sleep(0.5)
+            if not quiet:
                 status.unlink(missing_ok=True)
                 print("\n" + (info.get("message") or f"Done. SHA-256 {info.get('sha256')}"))
-                return 0 if info["state"] == "done" else 1
+            return 0 if info["state"] == "done" else 1
         info = device.clone(a.source, a.dest, a.size, a.status, show)
         if not a.status:
             print("\n" + (info.get("message") or f"Done. SHA-256 {info.get('sha256')}"))
