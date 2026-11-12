@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -69,6 +70,30 @@ def main(argv=None) -> int:
     if a.cmd == "clone":
         from . import device
         show = None if a.status else (lambda i: print(f"\r{i['done'] >> 20} MB", end="", flush=True))
+        if not a.status:
+            # a drive may be named the way "drives" lists it; and reading one needs administrator
+            # rights on Windows, which only the helper started below asks for
+            known = next((d for d in device.list_drives() if a.source in (d.id, d.path)), None)
+            if known is not None:
+                a.source, a.size = known.path, a.size or known.size
+            if known is not None and sys.platform == "win32" and not device.is_admin():
+                import tempfile
+                import time
+                status = Path(tempfile.gettempdir()) / f"photorecover-clone-{os.getpid()}.json"
+                device.start_clone(known, a.dest, status)
+                info = {}
+                while True:
+                    try:
+                        info = json.loads(status.read_text())
+                    except (OSError, ValueError):
+                        pass
+                    if info.get("state") in ("done", "error", "cancelled"):
+                        break
+                    show(info) if "done" in info else None
+                    time.sleep(0.5)
+                status.unlink(missing_ok=True)
+                print("\n" + (info.get("message") or f"Done. SHA-256 {info.get('sha256')}"))
+                return 0 if info["state"] == "done" else 1
         info = device.clone(a.source, a.dest, a.size, a.status, show)
         if not a.status:
             print("\n" + (info.get("message") or f"Done. SHA-256 {info.get('sha256')}"))

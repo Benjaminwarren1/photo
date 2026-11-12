@@ -118,6 +118,16 @@ def free_space(folder: Path) -> int:
 def _device_size(f, path: str, hint: int | None) -> int:
     if hint:
         return hint
+    if sys.platform == "win32":          # a raw drive has no file size; ask the drive itself
+        try:
+            import ctypes
+            import msvcrt
+            n, got = ctypes.c_longlong(0), ctypes.c_ulong(0)
+            if ctypes.windll.kernel32.DeviceIoControl(ctypes.c_void_p(msvcrt.get_osfhandle(f.fileno())), 0x0007405C,
+                                                      None, 0, ctypes.byref(n), 8, ctypes.byref(got), None) and n.value > 0:
+                return int(n.value)
+        except (OSError, ValueError, AttributeError):
+            pass
     try:
         return os.fstat(f.fileno()).st_size or f.seek(0, os.SEEK_END)
     except OSError:
@@ -170,6 +180,7 @@ def clone(source: str, dest: Path, size: int | None = None, status_file: Path | 
                 except OSError:
                     # a bad patch: go through it one sector at a time
                     buf = b""
+                    before, failed = list(bad), 0
                     for o in range(done, done + want, SECTOR):
                         try:
                             f.seek(o)
@@ -177,12 +188,17 @@ def clone(source: str, dest: Path, size: int | None = None, status_file: Path | 
                         except OSError:
                             s = b""
                         if len(s) < SECTOR:
+                            failed += 1
                             if not bad or bad[-1][0] + bad[-1][1] != o:
                                 bad.append((o, SECTOR))
                             else:
                                 bad[-1] = (bad[-1][0], bad[-1][1] + SECTOR)
                             s = s + bytes(SECTOR - len(s))
                         buf += s
+                    if not total and failed == want // SECTOR:
+                        # size unknown and not one sector of this stretch can be read: the card ends here
+                        bad[:] = before
+                        break
                     try:
                         f.seek(done + want)
                     except OSError:
