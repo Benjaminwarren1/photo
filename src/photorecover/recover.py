@@ -618,7 +618,7 @@ class Recovery:
                 it.note = "its space was reused by a later file"
 
         # Pass 3: photos with no folder entry left at all.
-        heads = self._photo_starts(avail) if self._only is None else None
+        heads = self._photo_starts(avail) if self._only is None else []
         if heads:
             self.log(f"Looking at {len(heads)} photo starts that have no folder entry")
         found: list[Item] = []
@@ -676,7 +676,7 @@ class Recovery:
         # Pass 4: pictures of other kinds, and videos, with no folder entry left. A PNG carries a
         # checksum on every part and a video an index of every frame, so each is taken only when
         # its own contents vouch for it.
-        others_found = [(c, k) for c, k in getattr(self, "_other_starts", []) if avail[c]] if heads is not None else []
+        others_found = [(c, k) for c, k in getattr(self, "_other_starts", []) if avail[c]] if self._only is None else []
         if others_found:
             self.log(f"Looking at {len(others_found)} other pictures and videos that have no folder entry")
         data_end = vol.data_off + (vol.max_cluster - 1) * cl
