@@ -37,6 +37,9 @@ def write_html(path: Path, summary: dict, rows: list[dict]) -> None:
             "worked out from what is still on it."
             + (f" {summary['since_format']} files deleted since that format were looked for first, in the card's current layout."
                if summary.get("since_format") else "") + "</p>") if summary.get("old_layout") else "",
+           (f"<p>The card is failing: {summary['unreadable_bytes'] / 1e6:.1f} MB of it could not be read when it was "
+            "copied, and is blank in the copy. Every file below that touches one of those areas says so in its note.</p>")
+           if summary.get("unreadable_bytes") else "",
            (f"<p>This drive has {e(summary['unreadable'])}, so its folders could not be read. The drive itself was "
             "searched for photos instead. That finds photos whether or not they were deleted, so some of what is "
             "below may still be on the drive in the normal way, and original file names are not known.</p>")

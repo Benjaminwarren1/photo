@@ -502,3 +502,36 @@ def test_card_with_a_hidden_partition_in_front_and_a_damaged_folder(tmp_path):
     assert not got - {t.sha256 for t in b.history}, "something wrong was delivered"
     assert all(t.sha256 in got for t in want), f"{sum(t.sha256 in got for t in want)} of {len(want)} photos came back"
     assert any(p.name.startswith("IMG") or "MG_" in p.name or "DSC" in p.name for p in files), [p.name for p in files][:5]
+
+
+def test_files_in_an_unreadable_part_of_a_failing_card_are_never_passed_off_as_good(tmp_path, monkeypatch):
+    """Copy a card that has bad patches (simulated), then recover from the copy: photos clear of
+    the bad patches come back as usual, and none that touches one lands in Recovered."""
+    import json
+    from photorecover import device
+    b = used_card(fat_type=16, cluster_size=8192, size_mb=64, seed=51, photos=16)
+    b.delete_all()
+    card = tmp_path / "card.bin"
+    b.save(card)
+    victims = [t for t in b.history if t.recoverable][:3]
+    bad = []
+    for t in victims:                       # one unreadable sector in the middle of each of three photos
+        mid = b.cluster_off(t.clusters[len(t.clusters) // 2])
+        bad.append([mid, mid + 512])
+    (tmp_path / "plan.json").write_text(json.dumps(dict(bad=bad)))
+    monkeypatch.setenv("PHOTORECOVER_FAULTS", str(tmp_path / "plan.json"))
+    device._Faulty.opens, device._Faulty.counts = 0, {}
+    info = device.clone(str(card), tmp_path / "copy" / "card.img")
+    assert info["state"] == "done" and info["bad_bytes"] == 3 * 512
+    rec = Recovery(tmp_path / "copy" / "card.img", tmp_path / "out")
+    rec.run()
+    assert rec.summary["unreadable_bytes"] == 3 * 512
+    files = [p for p in (tmp_path / "out" / FOLDER_OK).rglob("*") if p.is_file()]
+    got = {hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+    assert not got - {t.sha256 for t in b.history}, "a damaged file was delivered as recovered"
+    hit = {t.sha256 for t in victims}
+    assert not got & hit
+    clear = [t for t in b.history if t.recoverable and t.sha256 not in hit]
+    assert sum(t.sha256 in got for t in clear) >= len(clear) - 1
+    assert sum("could not be read" in i.note for i in rec.items) >= 1
+    assert "failing" in (tmp_path / "out" / "report.html").read_text()

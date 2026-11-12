@@ -120,3 +120,52 @@ def test_copy_command_takes_a_drive_by_the_name_the_drive_list_shows(tmp_path, m
     assert dest.read_bytes() == (drives / "CARD7.img").read_bytes()
     if with_status:
         assert json.loads(status.read_text())["state"] == "done"
+
+
+def _faulty(tmp_path, monkeypatch, plan, size=6 << 20):
+    import os
+    src = tmp_path / "dying-card.bin"
+    data = os.urandom(size)
+    src.write_bytes(data)
+    (tmp_path / "plan.json").write_text(json.dumps(plan))
+    monkeypatch.setenv("PHOTORECOVER_FAULTS", str(tmp_path / "plan.json"))
+    device._Faulty.opens, device._Faulty.counts = 0, {}
+    return src, data
+
+
+def test_copy_of_a_failing_card_keeps_everything_readable_and_lists_the_rest(tmp_path, monkeypatch):
+    import hashlib
+    bad = [[1_500_000 // 512 * 512, 1_500_000 // 512 * 512 + 2048], [4 << 20, (4 << 20) + 512]]
+    src, data = _faulty(tmp_path, monkeypatch, dict(bad=bad, flaky=[[3 << 20, (3 << 20) + 4096, 1]]))
+    dest = tmp_path / "out" / "card.img"
+    info = device.clone(str(src), dest)
+    assert info["state"] == "done"
+    want = bytearray(data)
+    for a, b in bad:
+        want[a:b] = bytes(b - a)
+    got = dest.read_bytes()
+    assert got == bytes(want), "only the unreadable sectors may differ, and they must be zeros"
+    assert [list(x) for x in info["bad"]] == [[a, b - a] for a, b in bad]
+    assert info["bad_bytes"] == 2048 + 512
+    assert info["sha256"] == hashlib.sha256(got).hexdigest()
+    listed = json.loads((tmp_path / "out" / "card.img.bad.json").read_text())
+    assert [list(x) for x in listed["unreadable"]] == [[a, b - a] for a, b in bad]
+    assert not (tmp_path / "out" / "card.img.map.json").exists()
+
+
+def test_copy_carries_on_after_the_card_drops_off(tmp_path, monkeypatch):
+    import hashlib
+    monkeypatch.setattr(device, "GIVE_UP_AFTER", 2)
+    src, data = _faulty(tmp_path, monkeypatch, dict(gone_at=(2 << 20) + 300_000, back_after=1,
+                                                    bad=[[1 << 20, (1 << 20) + 512]]))
+    dest = tmp_path / "out" / "card.img"
+    first = device.clone(str(src), dest, size=len(data))
+    assert first["state"] == "error" and first["error"] == "gone" and first.get("resumable")
+    assert dest.exists() and (tmp_path / "out" / "card.img.map.json").exists()
+    assert first["done"] == 1 << 20        # back to where the unreadable stretch began
+    second = device.clone(str(src), dest, size=len(data))
+    assert second["state"] == "done"
+    want = bytearray(data)
+    want[1 << 20:(1 << 20) + 512] = bytes(512)
+    assert dest.read_bytes() == bytes(want)
+    assert second["sha256"] == hashlib.sha256(bytes(want)).hexdigest()

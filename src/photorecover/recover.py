@@ -315,6 +315,15 @@ class Recovery:
                 raise
             self.vol = open_unreadable(m, self.log)
             self.unreadable = self.vol.what
+        # Areas the copy could not read from the card (blank in the image), listed beside the image.
+        self.blank_ranges: list[tuple[int, int]] = []
+        if isinstance(image, (str, Path)):
+            try:
+                import json
+                listed = json.loads(Path(str(image) + ".bad.json").read_text())
+                self.blank_ranges = sorted((int(a), int(a) + int(n)) for a, n in listed["unreadable"])
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
         self.items: list[Item] = []
         self.summary: dict = {}
         self.problems: list[str] = []
@@ -774,6 +783,7 @@ class Recovery:
                                    for i, (m, t) in enumerate(self.steps)],
                             old_layout=self.old_layout, unreadable=self.unreadable)
         self.summary["since_format"] = len(newer.items) if newer is not None else 0
+        self.summary["unreadable_bytes"] = sum(b - a for a, b in self.blank_ranges)
         if self.out and self._only is None:
             self._write_report()
         return self.summary
@@ -908,6 +918,24 @@ class Recovery:
         without passing the audit on the exact bytes being written."""
         self._taken: set[str] = self._shared_taken if self._shared_taken is not None else set()
         todo = [it for it in self.items if it.chain]
+        if self.blank_ranges:
+            # which clusters of this layout touch a part of the card that could not be read
+            vol, hit = self.vol, set()
+            for a, b in self.blank_ranges:
+                c0 = max(2, (a - vol.data_off) // vol.cl + 2)
+                c1 = min(vol.max_cluster, (b - 1 - vol.data_off) // vol.cl + 2)
+                hit.update(range(c0, c1 + 1))
+            for it in self.items:
+                if it.grade in (GRADE_PARTIAL, GRADE_REVIEW, GRADE_LOST) and it.size and hit.isdisjoint(it.chain) \
+                        and not hit.isdisjoint(range(it.start, it.start + -(-it.size // vol.cl))):
+                    it.note = (it.note + "; " if it.note else "") + \
+                        "an area of the card that could not be read lies where this file was stored"
+            for it in todo:
+                if not hit.isdisjoint(it.chain):
+                    it.note = (it.note + "; " if it.note else "") + \
+                        "part of this file was in an area of the card that could not be read, and is blank there"
+                    if it.kind != "jpeg" and it.grade in (GRADE_VERIFIED, GRADE_UNVERIFIED):
+                        it.grade = GRADE_PARTIAL
         if todo:
             self.log(f"Checking every recovered file once more and saving {len(todo)} files")
         for k, (it, verdict) in enumerate(_ahead(todo, self._audit, _workers())):

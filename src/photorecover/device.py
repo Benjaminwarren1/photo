@@ -169,22 +169,90 @@ def _device_size(f, path: str, hint: int | None) -> int:
             pass
 
 
+class _Faulty:
+    """For testing: a drive (really a file) that fails the way a dying card does. `plan` is a dict:
+    bad: [[start, end], ...] byte ranges that can never be read; flaky: [[start, end, times], ...]
+    ranges that fail that many times and then read; gone_at: a position past which, once reached,
+    every read fails (the card has dropped off the computer) until the drive is opened again
+    `back_after` times; slow: [[start, end, seconds], ...]."""
+    counts: dict = {}
+    opens = 0
+
+    def __init__(self, path: str, plan: dict):
+        self.f, self.plan, self.pos = open(path, "rb", buffering=0), plan, 0
+        type(self).opens += 1
+        self.gone = False
+        if plan.get("gone_at") is not None and type(self).opens > 1 and type(self).opens <= 1 + plan.get("back_after", 0):
+            raise OSError("the device is not ready")
+
+    def seek(self, pos: int, whence: int = 0) -> int:
+        self.pos = self.f.seek(pos, whence)
+        return self.pos
+
+    def read(self, n: int) -> bytes:
+        a, b, plan = self.pos, self.pos + n, self.plan
+        if self.gone or (plan.get("gone_at") is not None and b > plan["gone_at"] and type(self).opens == 1):
+            self.gone = True
+            raise OSError("the device is not ready")
+        for x, y, secs in plan.get("slow", []):
+            if a < y and b > x:
+                time.sleep(secs)
+        for x, y in plan.get("bad", []):
+            if a < y and b > x:
+                raise OSError("data error (cyclic redundancy check)")
+        for i, (x, y, times) in enumerate(plan.get("flaky", [])):
+            if a < y and b > x and self.counts.setdefault(i, 0) < times:
+                self.counts[i] += 1
+                raise OSError("data error (cyclic redundancy check)")
+        self.f.seek(a)
+        data = self.f.read(n)
+        self.pos = a + len(data)
+        return data
+
+    def fileno(self) -> int:
+        return self.f.fileno()
+
+    def close(self) -> None:
+        self.f.close()
+
+
+def _open_source(source: str):
+    plan = os.environ.get("PHOTORECOVER_FAULTS")       # tests: a JSON file describing a failing card
+    if plan:
+        return _Faulty(source, json.loads(Path(plan).read_text()))
+    return open(source, "rb", buffering=0)
+
+
+GIVE_UP_AFTER = 48          # this many chunks in a row unreadable: the card has probably dropped off
+BLOCK = 64 << 10
+
+
 def clone(source: str, dest: Path, size: int | None = None, status_file: Path | None = None,
           progress=None, cancelled=None) -> dict:
     """Read the whole card into one image file.
 
-    The card is opened read-only. Unreadable sectors are retried one at a time,
-    filled with zeros if they still fail, and listed in the result."""
+    The card is opened read-only. A failing card may not survive much reading, so everything
+    that reads easily is copied first; only then are the difficult patches gone back to, in
+    smaller and smaller steps. What still cannot be read is left as zeros and listed beside the
+    image (<image>.bad.json). If the card stops responding, what has been copied is kept, and
+    running the same copy again carries on from there."""
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    map_file = Path(str(dest) + ".map.json")
+    bad_file = Path(str(dest) + ".bad.json")
     t0 = time.time()
     sha = hashlib.sha256()
-    bad: list[tuple[int, int]] = []
-    done = 0
-    last_note = 0.0
+    bad: list[tuple[int, int]] = []          # (start, length) that could not be read at all
+    later: list[tuple[int, int]] = []        # (start, length) skipped on the first pass
+    done = 0                                  # how far the first pass has got
+    in_order = True                           # the running hash is only right if nothing was skipped
+    last_note = last_map = 0.0
+    total = 0
+    phase = "cloning"
 
     def note(state: str, **extra):
-        info = dict(state=state, done=done, total=total, bad_bytes=sum(n for _, n in bad),
+        missing = sum(n for _, n in bad) + sum(n for _, n in later)
+        info = dict(state=state, done=done, total=total, bad_bytes=missing,
                     seconds=round(time.time() - t0, 1), **extra)
         if status_file:
             tmp = Path(str(status_file) + ".tmp")
@@ -194,63 +262,188 @@ def clone(source: str, dest: Path, size: int | None = None, status_file: Path | 
             progress(info)
         return info
 
-    total = 0
+    def save_map():
+        tmp = Path(str(map_file) + ".tmp")
+        tmp.write_text(json.dumps(dict(source=str(source), total=total, done=done, later=later, bad=bad)))
+        os.replace(tmp, map_file)
+
+    def add(ranges: list, o: int, n: int) -> None:
+        if ranges and ranges[-1][0] + ranges[-1][1] == o:
+            ranges[-1] = (ranges[-1][0], ranges[-1][1] + n)
+        else:
+            ranges.append((o, n))
+
+    resumed = None
+    if map_file.exists() and dest.exists():
+        try:
+            resumed = json.loads(map_file.read_text())
+        except (OSError, ValueError):
+            resumed = None
+    f = out = None
     try:
-        with open(source, "rb", buffering=0) as f, open(dest, "wb") as out:
-            total = _device_size(f, source, size)
-            while total == 0 or done < total:
-                if cancelled and cancelled():
-                    out.close()
-                    dest.unlink(missing_ok=True)
-                    return note("cancelled")
-                want = CHUNK if not total else min(CHUNK, total - done)
-                want += -want % SECTOR
-                try:
-                    buf = f.read(want)
-                except OSError:
-                    # a bad patch: go through it one sector at a time
-                    buf = b""
-                    before, failed = list(bad), 0
-                    for o in range(done, done + want, SECTOR):
-                        try:
-                            f.seek(o)
-                            s = f.read(SECTOR)
-                        except OSError:
-                            s = b""
-                        if len(s) < SECTOR:
-                            failed += 1
-                            if not bad or bad[-1][0] + bad[-1][1] != o:
-                                bad.append((o, SECTOR))
-                            else:
-                                bad[-1] = (bad[-1][0], bad[-1][1] + SECTOR)
-                            s = s + bytes(SECTOR - len(s))
-                        buf += s
-                    if not total and failed == want // SECTOR:
-                        # size unknown and not one sector of this stretch can be read: the card ends here
-                        bad[:] = before
-                        break
+        f = _open_source(source)
+        total = _device_size(f, source, size)
+        if resumed and resumed.get("total") == total and total and resumed.get("source") == str(source):
+            done = int(resumed["done"])
+            later = [tuple(x) for x in resumed["later"]]
+            bad = [tuple(x) for x in resumed["bad"]]
+            in_order = False
+            out = open(dest, "r+b")
+        else:
+            out = open(dest, "wb")
+        fpos = -1
+
+        def read_at(o: int, n: int) -> bytes:
+            nonlocal fpos
+            if fpos != o:
+                f.seek(o)
+            fpos = -1
+            data = f.read(n)
+            fpos = o + len(data)
+            return data
+
+        # First pass: everything that reads without trouble.
+        failures = 0
+        while total == 0 or done < total:
+            if cancelled and cancelled():
+                out.close()
+                dest.unlink(missing_ok=True)
+                map_file.unlink(missing_ok=True)
+                return note("cancelled")
+            want = CHUNK if not total else min(CHUNK, total - done)
+            want += -want % SECTOR
+            try:
+                buf = read_at(done, want)
+            except OSError:
+                buf = None
+            if buf is None and not total:
+                # size unknown: is this a bad patch, or the end of the card?
+                got, readable = b"", 0
+                for o in range(done, done + want, SECTOR):
                     try:
-                        f.seek(done + want)
+                        sec = read_at(o, SECTOR)
                     except OSError:
-                        pass
-                if not buf:
+                        sec = b""
+                    readable += len(sec) == SECTOR
+                    if len(sec) < SECTOR:
+                        add(bad, o, SECTOR)
+                    got += sec + bytes(SECTOR - len(sec))
+                if not readable:
+                    while bad and bad[-1][0] + bad[-1][1] > done:       # nothing there: the card ends here
+                        o, n = bad.pop()
+                        if o < done:
+                            bad.append((o, done - o))
+                            break
                     break
+                buf = got
+            if buf is None:
+                failures += 1
+                add(later, done, want)
+                in_order = False
+                done += want
+                if failures >= GIVE_UP_AFTER:
+                    # Nothing has read for a long stretch. See whether the card is still there at all.
+                    try:
+                        f.close()
+                        f = _open_source(source)
+                        fpos = -1
+                        read_at(0, SECTOR)
+                        failures = 0
+                    except OSError:
+                        back = sum(n for o, n in later[-1:])
+                        done -= back                  # that last stretch was the card going, not bad patches
+                        later.pop()
+                        save_map()
+                        out.close()
+                        return note("error", error="gone", resumable=True,
+                                    message="The card stopped responding. What has been copied so far is kept. "
+                                            "Take the card out, put it back in, and start the copy again: "
+                                            "it will carry on from where it stopped.")
+            elif not buf:
+                break
+            else:
+                failures = 0
                 if total and done + len(buf) > total:
                     buf = buf[:total - done]
+                out.seek(done)
                 out.write(buf)
-                sha.update(buf)
+                if in_order:
+                    sha.update(buf)
                 done += len(buf)
-                if time.time() - last_note > 0.5:
-                    last_note = time.time()
-                    note("cloning")
+            now = time.time()
+            if now - last_note > 0.5:
+                last_note = now
+                note(phase)
+            if now - last_map > 5 and total:
+                last_map = now
+                out.flush()
+                save_map()
+        if total and done < total:
+            save_map()
+            out.close()
+            return note("error", error="short", resumable=True,
+                        message="The card stopped responding before the end. What has been copied so far is kept; "
+                                "start the copy again to carry on.")
+        total = total or done
+
+        # Second pass: back to the difficult patches, in smaller steps, smallest last.
+        phase = "retrying"
+        for step in (BLOCK, SECTOR):
+            todo, later = later, []
+            for k, (o0, n0) in enumerate(todo):
+                for o in range(o0, o0 + n0, step):
+                    if cancelled and cancelled():           # enough: keep what there is
+                        add(bad, o, o0 + n0 - o)
+                        for o1, n1 in todo[k + 1:]:
+                            add(bad, o1, n1)
+                        todo = []
+                        break
+                    n = min(step, o0 + n0 - o, total - o)
+                    if n <= 0:
+                        break
+                    try:
+                        buf = read_at(o, n)
+                    except OSError:
+                        buf = b""
+                    if len(buf) == n:
+                        out.seek(o)
+                        out.write(buf)
+                    else:
+                        add(later if step > SECTOR else bad, o, n)
+                    if time.time() - last_note > 0.5:
+                        last_note = time.time()
+                        note(phase)
+                if not todo:
+                    break
+            if step == SECTOR:
+                later = []
+        bad.sort()
+        out.truncate(total)
+        out.close()
+        out = None
+        if not in_order:
+            sha = hashlib.sha256()
+            with open(dest, "rb") as g:
+                for block in iter(lambda: g.read(8 << 20), b""):
+                    sha.update(block)
+        map_file.unlink(missing_ok=True)
+        if bad:
+            bad_file.write_text(json.dumps(dict(unreadable=bad, total=total)))
+        else:
+            bad_file.unlink(missing_ok=True)
     except PermissionError:
         return note("error", error="permission", message="Reading the card needs administrator rights.")
     except OSError as e:
-        Path(dest).unlink(missing_ok=True)
+        if not done:
+            Path(dest).unlink(missing_ok=True)
         return note("error", error="io", message=f"Could not read the card: {e}")
-    if total and done < total:
-        return note("error", error="short", message="The card stopped responding before the end.")
-    total = total or done
+    finally:
+        for h in (f, out):
+            try:
+                if h is not None:
+                    h.close()
+            except OSError:
+                pass
     return note("done", sha256=sha.hexdigest(), image=str(dest), bad=bad)
 
 
