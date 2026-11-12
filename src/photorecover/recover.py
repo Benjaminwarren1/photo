@@ -687,7 +687,10 @@ class Recovery:
         # Pass 4: pictures of other kinds, and videos, with no folder entry left. A PNG carries a
         # checksum on every part and a video an index of every frame, so each is taken only when
         # its own contents vouch for it.
-        others_found = [(c, k) for c, k in getattr(self, "_other_starts", []) if avail[c]] if self._only is None else []
+        # (a file saved unverified from its folder entry does not claim its space, so skip its start here)
+        begun = {it.chain[0] for it in items if it.chain}
+        others_found = [(c, k) for c, k in getattr(self, "_other_starts", [])
+                        if avail[c] and c not in begun] if self._only is None else []
         if others_found:
             self.log(f"Looking at {len(others_found)} other pictures and videos that have no folder entry")
         data_end = vol.data_off + (vol.max_cluster - 1) * cl
