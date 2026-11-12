@@ -93,3 +93,13 @@ def test_wizard_review_api(tmp_path):
         assert nxt["index"] == idx and nxt["candidates"][0]["image"].startswith("data:image/jpeg;base64,")
         session.review_pick(idx, t.clusters[len(it.chain)])
     assert it.grade == "Verified" and session.state()["to_review"] == 0
+
+
+def test_copy_destination_is_checked_before_copying(tmp_path):
+    from photorecover import device
+    big = 128 * 10**9
+    assert device.dest_problem(tmp_path, big, free=200 * 10**9, fs="exFAT") is None
+    assert "not enough room" in device.dest_problem(tmp_path, big, free=120 * 10**9, fs="exFAT")
+    assert "4 GB" in device.dest_problem(tmp_path, big, free=200 * 10**9, fs="FAT32")
+    assert device.dest_problem(tmp_path, 2 * 10**9, free=200 * 10**9, fs="FAT32") is None
+    assert device.dest_problem(tmp_path / "not yet made", 1000) is None

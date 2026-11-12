@@ -115,6 +115,36 @@ def free_space(folder: Path) -> int:
     return shutil.disk_usage(p).free
 
 
+def filesystem_of(folder: Path) -> str:
+    """The format of the drive a folder is on ("FAT32", "exFAT", "NTFS"...), or "" when unknown."""
+    if sys.platform != "win32":
+        return ""
+    try:
+        import ctypes
+        p = Path(folder).resolve()
+        name = ctypes.create_unicode_buffer(64)
+        ok = ctypes.windll.kernel32.GetVolumeInformationW(p.anchor, None, 0, None, None, None, name, 64)
+        return name.value if ok else ""
+    except (OSError, AttributeError, ValueError):
+        return ""
+
+
+def dest_problem(folder: Path, size: int | None, free: int | None = None, fs: str | None = None) -> str | None:
+    """Why a copy of a card of this size cannot be saved in this folder, in plain words, or None."""
+    if not size:
+        return None
+    gb = lambda n: f"{n / 1e9:.1f} GB"
+    free = free_space(folder) if free is None else free
+    if free < size:
+        return (f"There is not enough room there: the copy needs {gb(size)} and only {gb(free)} is free. "
+                "Choose another drive.")
+    fs = filesystem_of(folder) if fs is None else fs
+    if size >= 1 << 32 and fs.upper() in ("FAT32", "FAT", "FAT16"):
+        return (f"That drive is formatted as {fs}, which cannot hold a file bigger than 4 GB, and the copy "
+                f"will be {gb(size)}. Choose another drive, or reformat that one as exFAT (this erases it).")
+    return None
+
+
 def _device_size(f, path: str, hint: int | None) -> int:
     if hint:
         return hint

@@ -76,6 +76,10 @@ def main(argv=None) -> int:
             known = next((d for d in device.list_drives() if a.source in (d.id, d.path)), None)
             if known is not None:
                 a.source, a.size = known.path, a.size or known.size
+            why = device.dest_problem(Path(a.dest).parent, a.size)
+            if why:
+                print(why)
+                return 1
             if known is not None and sys.platform == "win32" and not device.is_admin():
                 import tempfile
                 import time

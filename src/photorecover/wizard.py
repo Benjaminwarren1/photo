@@ -106,6 +106,10 @@ class Session:
         if not self.space()["ok"]:
             self.message = "There is not enough free space in that folder. Choose another drive, such as an external one."
             return
+        why = device.dest_problem(self.folder, self.drive.size)
+        if why:
+            self.message = why
+            return
         self.folder.mkdir(parents=True, exist_ok=True)
         self.image = self.folder / "card.img"
         self.status_file = self.folder / "clone-status.json"
