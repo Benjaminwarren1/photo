@@ -467,3 +467,38 @@ def test_pngs_and_videos_with_no_folder_entry_are_found(tmp_path):
         assert saved[data].grade == "Verified", (name, saved[data].grade, saved[data].note)
     assert bytes(cut) not in saved and not any(i.name.endswith(".png") and i.size != len(files["DCIM/SHOT.PNG"])
                                                for i in rec.items)
+
+
+def test_card_with_a_hidden_partition_in_front_and_a_damaged_folder(tmp_path):
+    """Seen on a real 128 GB card: a raw partition first (full of data that is not files), the FAT32
+    area after it, and a deleted folder whose first slot had been blanked so the entries of its
+    photos lay beyond the folder's end mark. The tool invented an "older layout" from pictures
+    packed inside the raw data and looked for every photo in the wrong place."""
+    import os
+    import struct
+    b = used_card(fat_type=32, cluster_size=4096, size_mb=64, seed=41, photos=14)
+    b.delete_all()
+    d = b._dirs["DCIM/100MEDIA"]
+    off = b.cluster_off(d.clusters[0])
+    b.img[off] = 0                                   # the folder now "ends" at its first slot
+    fat = b.tobytes()
+    assert b.part, "the builder is expected to put its volume in a partition"
+    filler = bytearray(os.urandom(8 << 20))
+    for k in range(30):                              # pictures inside other data, on no grid at all
+        at = (1000 + k * 397) * 512
+        filler[at:at + 4] = b"\xff\xd8\xff\xe0"
+    mbr = bytearray(fat[:512])
+    ptype, lba, count = struct.unpack_from("<4xB3xII", mbr, 446)
+    struct.pack_into("<I", mbr, 446 + 8, lba + len(filler) // 512)
+    img = tmp_path / "card.img"
+    img.write_bytes(bytes(mbr) + bytes(filler) + fat[512:])
+    rec = Recovery(img, tmp_path / "out")
+    rec.run()
+    assert rec.summary["old_layout"] is None, "pictures packed inside other data were taken for an older layout"
+    assert not rec.summary["problems"]
+    files = [p for p in (tmp_path / "out" / FOLDER_OK).rglob("*") if p.is_file()]
+    got = {hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+    want = [t for t in b.history if t.recoverable]
+    assert not got - {t.sha256 for t in b.history}, "something wrong was delivered"
+    assert all(t.sha256 in got for t in want), f"{sum(t.sha256 in got for t in want)} of {len(want)} photos came back"
+    assert any(p.name.startswith("IMG") or "MG_" in p.name or "DSC" in p.name for p in files), [p.name for p in files][:5]

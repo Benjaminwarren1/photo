@@ -31,6 +31,7 @@ SIGNATURES = {            # extension -> bytes a file of that type starts with (
     "heic": (4, b"ftyp"), "avi": (0, b"RIFF"), "wav": (0, b"RIFF"), "pdf": (0, b"%PDF"),
     "zip": (0, b"PK"), "cr2": (0, b"II*\0"), "nef": (0, b"MM\0*"), "arw": (0, b"II*\0"),
     "dng": (0, None), "tif": (0, None), "mp3": (0, None),
+    "mpo": (0, b"\xff\xd8\xff"),       # a 3D photo: two JPEGs in one file
 }
 BOX_TYPES = {b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide", b"uuid", b"meta", b"udta", b"pnot", b"moof",
              b"mfra", b"sidx", b"styp", b"PICT", b"pict", b"thum", b"junk"}
@@ -441,7 +442,10 @@ class Recovery:
             try:
                 return fn(*args, **kw)
             except Exception as e:  # noqa: BLE001
-                self.problems.append(f"{it.name if it else '?'}: {type(e).__name__}: {e}")
+                import traceback
+                at = traceback.extract_tb(e.__traceback__)[-1]
+                self.problems.append(f"{it.name if it else '?'}: {type(e).__name__}: {e} "
+                                     f"({Path(at.filename).name}:{at.lineno})")
                 if it is not None:
                     it.note = "the tool hit an unexpected problem with this file and skipped it"
                 return None
@@ -457,6 +461,8 @@ class Recovery:
         for e in targets:
             ext = e.ext
             start = self._resolve_start(e, ext)
+            if not e.in_tree and not vol.valid(start):
+                continue        # read from a swept block, and points nowhere: not a real file's entry
             key = (start, e.size)
             it = Item(name=e.name, folder=e.path, size=e.size, start=start,
                       kind="jpeg" if ext in JPEG_EXT else "other",

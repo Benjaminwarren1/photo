@@ -38,6 +38,7 @@ def main(argv=None) -> int:
     r.add_argument("image", type=Path, help="raw image of the card (a .img or .dd file)")
     r.add_argument("--out", type=Path, help="output folder (default: '<image name> recovered' next to the image)")
     r.add_argument("--json", action="store_true", help="print the summary as JSON, for other programs")
+    r.add_argument("--profile", type=Path, help="for developers: write where the time went to this text file")
     p = sub.add_parser("pilot", help="recover, then let another program decide the close calls using JSON lines")
     p.add_argument("image", type=Path)
     p.add_argument("--out", type=Path)
@@ -145,7 +146,18 @@ def main(argv=None) -> int:
     if a.cmd == "pilot":
         rec.log = lambda m: None
         return pilot(rec, out)
-    summary = rec.run()
+    if getattr(a, "profile", None):
+        import cProfile
+        import io
+        import pstats
+        prof = cProfile.Profile()
+        summary = prof.runcall(rec.run)
+        text = io.StringIO()
+        for order, n in (("cumulative", 60), ("tottime", 35)):
+            pstats.Stats(prof, stream=text).strip_dirs().sort_stats(order).print_stats(n)
+        a.profile.write_text(text.getvalue())
+    else:
+        summary = rec.run()
     if a.json:
         print(json.dumps(dict(summary, out=str(out))))
     else:

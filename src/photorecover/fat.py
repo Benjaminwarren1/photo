@@ -185,12 +185,18 @@ class FatVolume:
         out: list[Entry] = []
         lfn: list[str] = []
         used = bad = 0
+        ended = False
         for o in range(0, len(buf) - 31, 32):
             e = buf[o:o + 32]
             if e[0] == 0:
-                if any(buf[o:]):          # a real directory is all zero after its end mark
+                # The end of the folder. Usually nothing but zeros follows, but some devices leave
+                # the entries of files deleted earlier beyond it; those are read as deleted files.
+                if not any(buf[o:]):
+                    break
+                ended, lfn = True, []
+                if any(e):
                     bad += 1
-                break
+                continue
             used += 1
             attr = e[11]
             if attr & 0x3F == 0x0F:
@@ -203,6 +209,10 @@ class FatVolume:
                 continue
             name, ext = e[0:8], e[8:11]
             deleted = name[0] == 0xE5
+            if not self._strict_slot(e):
+                bad += 1
+                lfn = []
+                continue
             body = (name[1:] if deleted else name) + ext
             if attr & 0xC0 or any(c < 0x20 or c in b'"*+,/:;<=>?[\\]|' for c in body):
                 bad += 1
@@ -215,6 +225,7 @@ class FatVolume:
                 lfn = []
                 continue
             base = ("_" + name[1:].decode("latin1") if deleted else name.decode("latin1")).rstrip()
+            deleted = deleted or ended
             x = ext.decode("latin1").rstrip()
             short = base + ("." + x if x else "")
             long = "".join(lfn).rstrip("￿") if lfn else ""
@@ -224,6 +235,16 @@ class FatVolume:
                              mtime=((wd >> 9) + 1980, (wd >> 5) & 15, wd & 31, wt >> 11, (wt >> 5) & 63)))
             lfn = []
         return out, used, bad
+
+    strict = False      # set while sweeping data that may not be folders at all
+
+    def _strict_slot(self, e) -> bool:
+        """While sweeping: the parts of a folder entry that the format reserves must look right.
+        Random data that happens to pass the name checks nearly always fails here."""
+        if not self.strict:
+            return True
+        wd = e[24] | (e[25] << 8)
+        return (e[12] & 0xE7) == 0 and e[13] < 200 and 1 <= (wd & 31) and 1 <= ((wd >> 5) & 15) <= 12
 
     def _walk_live(self):
         """Yields (entries, where_cluster, path) for every directory reachable from the root."""
@@ -275,23 +296,46 @@ class FatVolume:
             n = min(step, self.max_cluster + 1 - c0)
             if progress:
                 progress(c0, self.max_cluster)
-            a = np.frombuffer(m, np.uint8, n * cl, self.data_off + (c0 - 2) * cl).reshape(n, cl)
+            spc = max(1, cl // SECTOR)
+            sec = cl // spc
+            a = np.frombuffer(m, np.uint8, n * cl, self.data_off + (c0 - 2) * cl).reshape(n * spc, sec)
             keep = (a[:, 0] != 0) & _slot_ok(a[:, :32])
-            if cl >= 64:
+            if sec >= 64:
                 keep &= (a[:, 32] == 0) | _slot_ok(a[:, 32:64])
-            for c in (np.flatnonzero(keep) + c0).tolist():
+            keep = keep.reshape(n, spc)
+            for i in np.flatnonzero(keep.any(axis=1)).tolist():
+                c = i + c0
                 if c in seen_clusters:
                     continue
                 o = self.data_off + (c - 2) * cl
-                buf = m[o:o + cl]
-                ents, used, bad = self.parse_dir(buf, c)
-                real = [e for e in ents if e.short not in (".", "..")]
-                dotted = buf[0:11] == b".          " and buf[32:43] == b"..         "
-                if bad or not ents:
-                    continue
-                if not dotted and not self._plausible(real, used):
-                    continue
-                orphans.append((c, ents))
+                # The whole cluster first. If that is not a folder, any run of sectors inside it
+                # that is: a folder's later part can outlive its start, and an older layout's
+                # folders do not begin where this layout's clusters do.
+                secs = np.flatnonzero(keep[i]).tolist()
+                pieces = ([(0, cl)] if secs[0] == 0 else []) + [(j * sec, cl) for j in secs if j] + \
+                    [(j * sec, (j + 1) * sec) for j in secs]
+                done_to, got = -1, []
+                for a0, a1 in pieces:
+                    if a0 < done_to:
+                        continue
+                    buf = m[o + a0:o + a1]
+                    self.strict = True
+                    try:
+                        ents, used, bad = self.parse_dir(buf, c)
+                    finally:
+                        self.strict = False
+                    real = [e for e in ents if e.short not in (".", "..")]
+                    dotted = buf[0:11] == b".          " and buf[32:43] == b"..         "
+                    if bad or not ents:
+                        continue
+                    if not dotted and not self._plausible(real, used):
+                        continue
+                    got += ents
+                    done_to = a1
+                    if a0 == 0 and a1 == cl:
+                        break
+                if got:
+                    orphans.append((c, got))
         for c, ents in orphans:
             for e in ents:
                 if e.is_dir and e.short not in (".", ".."):

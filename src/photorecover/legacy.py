@@ -25,13 +25,13 @@ class _Sectors(FatVolume):
     """The whole image seen as 512-byte "clusters", so folder data can be found
     wherever it lies, whatever the layout used to be."""
 
-    def __init__(self, m):
+    def __init__(self, m, upto: int | None = None):
         self.m, self.part = m, 0
         self.bps = self.cl = SECTOR
         self.data_off = 2 * SECTOR      # so that "cluster" c is simply sector c
         self.root_off = self.fat_off = 0
         self.root_size = self.fat_size = self.root_cluster = 0
-        self.ncl = len(m) // SECTOR - 2
+        self.ncl = max(0, (len(m) if upto is None else min(upto, len(m))) // SECTOR - 2)
         self.fat_bits = 32            # keep the high word; it is judged later
         self.fat = np.zeros(0, np.uint32)
         self.eoc = 0x0FFFFFF8
@@ -136,15 +136,21 @@ def find_old_layout(vol: FatVolume, entries: list[Entry], log=None):
     """If folders survive on the card that belong to an earlier layout (it was reformatted with
     different settings), returns a volume for that layout; otherwise None. Those folders need not
     be visible in the current layout at all, so the whole card is looked over, not just `entries`."""
-    return _infer(vol.m, vol, log)
+    return _infer(vol.m, vol, log, entries)
 
 
-def _infer(m, vol: FatVolume | None, log=None):
+def _infer(m, vol: FatVolume | None, log=None, entries: list[Entry] | None = None):
     """Work out an earlier layout from the folders and photo starts found on the card."""
     total = len(m) // SECTOR
     sigs = _signature_maps(m)
+    if vol is not None and entries is not None and vol.data_off % SECTOR == 0:
+        # The card's own sweep has already read every sector of its data area for folders,
+        # whichever layout they belong to. Only the part in front of that is left to look at.
+        found = [e for e in entries if not e.in_tree] + _Sectors(m, vol.data_off).scan_entries()
+    else:
+        found = _Sectors(m).scan_entries()
     # Only files that the current layout cannot account for say anything about an older one.
-    old_entries = [e for e in _Sectors(m).scan_entries()
+    old_entries = [e for e in found
                    if not e.is_dir and e.size > 0 and _kind(e) and (vol is None or not _explained(vol, e))]
     testable, votes = _votes(old_entries, sigs, total)
     if vol is not None:
@@ -160,8 +166,15 @@ def _infer(m, vol: FatVolume | None, log=None):
             return LegacyFatVolume(m, cs, off, vol)
     # no folder entries to go on: fall back on where photos start
     pos = sigs["jpg"].astype(np.int64) * SECTOR
-    if len(pos) >= 8 and (vol is None or ((pos - vol.data_off) % vol.cl == 0).mean() < 0.5):
-        for cs in reversed(CLUSTER_SIZES):
+    sizes = CLUSTER_SIZES
+    if vol is not None:
+        # Photos that sit where the current layout puts files say nothing about an older one, and
+        # "every 512 bytes" is no layout at all: pictures packed inside other files line up that way.
+        on_grid = (pos >= vol.data_off) & ((pos - vol.data_off) % vol.cl == 0)
+        pos = pos[~on_grid] if on_grid.mean() < 0.5 else pos[:0]
+        sizes = [cs for cs in CLUSTER_SIZES if cs >= 2048]
+    if len(pos) >= 8:
+        for cs in reversed(sizes):
             res, counts = np.unique(pos % cs, return_counts=True)
             if counts.max() >= 0.9 * len(pos):
                 off = int(res[counts.argmax()])
