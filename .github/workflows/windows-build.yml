@@ -8,6 +8,8 @@ on:
 concurrency:
   group: windows-build-${{ github.ref }}
   cancel-in-progress: true
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: windows-latest
@@ -32,3 +34,15 @@ jobs:
         with:
           name: PhotoRecovery-windows
           path: dist/PhotoRecovery
+      # The newest build is also kept as a "dev-build" pre-release, so it can be fetched with a plain download.
+      - name: Publish as the dev-build pre-release
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && 7z a -tzip ../PhotoRecovery-windows.zip PhotoRecovery > /dev/null)
+          sha="${{ github.event.pull_request.head.sha || github.sha }}"
+          gh release view dev-build > /dev/null 2>&1 || gh release create dev-build --prerelease --title "Development build" --notes "Rebuilt automatically from the newest code. Unsigned and untested: for trying things out only." --target "$sha"
+          gh release upload dev-build PhotoRecovery-windows.zip --clobber
+          gh release edit dev-build --notes "Built from $sha. Rebuilt automatically from the newest code. Unsigned and untested: for trying things out only."
