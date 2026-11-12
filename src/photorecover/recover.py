@@ -568,18 +568,24 @@ class Recovery:
         if pending:
             self.log(f"Rebuilding {len(pending)} photos that are stored in pieces")
         tried = {it.start for it in pending}
+
+        def stale_entry(it) -> bool:
+            """Its first cluster has since been proved to belong to another file, so this folder
+            entry is out of date. What starts there is that file, not this one."""
+            if not vol.valid(it.start) or avail[it.start]:
+                return False
+            now = next((o for o in items if o.chain and o is not it and it.start in o.chain[:1]), None) \
+                or next((o for o in items if o.chain and o is not it and it.start in o.chain), None)
+            it.note = ("its space now holds a different file" +
+                       (f" ({now.name})" if now is not None and now.name else "") + ", saved after this one was deleted")
+            it._last = None
+            return True
+
         for rnd in range(2):
             still = []
             for k, it in enumerate(pending):
                 self.progress = (k, len(pending))
-                if vol.valid(it.start) and not avail[it.start]:
-                    # Its first cluster has since been proved to belong to another file, so this
-                    # folder entry is out of date. What starts there is that file, not this one.
-                    now = next((o for o in items if o.chain and o is not it and it.start in o.chain[:1]), None) \
-                        or next((o for o in items if o.chain and o is not it and it.start in o.chain), None)
-                    it.note = ("its space now holds a different file" +
-                               (f" ({now.name})" if now is not None and now.name else "") + ", saved after this one was deleted")
-                    it._last = None
+                if stale_entry(it):
                     continue
                 # First time round each next piece is sought only near the last one. On a real,
                 # much-used card it was within reach there for 998 joins in 1000; the second time
@@ -600,6 +606,8 @@ class Recovery:
             if rnd == 0 and pending:
                 self.log(f"Searching the whole card for the rest of {len(pending)} photos")
         for it in pending:
+            if stale_entry(it):      # the photo that replaced it may only have been finished after its own turn
+                continue
             r: Result = it._last
             it.chain, it.percent, it.picks = r.chain, r.percent, r.picks
             it.candidates = r.candidates
@@ -616,6 +624,9 @@ class Recovery:
                 claim(r.chain)
             else:
                 it.note = "its space was reused by a later file"
+        for it in items:        # and a photo left unfinished whose start one of those has just taken
+            if it.kind == "jpeg" and it.grade in (GRADE_REVIEW, GRADE_PARTIAL) and stale_entry(it):
+                it.grade, it.chain, it.candidates, it.percent, it.method = GRADE_LOST, [], [], 0.0, ""
 
         # Pass 3: photos with no folder entry left at all.
         heads = self._photo_starts(avail) if self._only is None else []
@@ -707,7 +718,7 @@ class Recovery:
             if not avail[chain].all():
                 return
             if b"moov" in seen or b"moof" in seen:
-                ext = "mov" if brand == b"qt  " else "3gp" if brand[:2] == b"3g" else "mp4"
+                ext = "mov" if brand == b"qt  " else "3gp" if brand[:2] == b"3g" else "m4a" if brand[:3] == b"M4A" else "mp4"
                 v = vr.rebuild(c, size) if b"moov" in seen else None
                 if v is not None and v.status == "complete" and not v.uncertain_joins and \
                         avail[np.asarray(v.chain, np.int64)].all():

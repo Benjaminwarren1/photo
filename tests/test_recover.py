@@ -407,7 +407,8 @@ def test_card_reformatted_then_used_again_gives_back_both_layers(tmp_path, new_p
     assert any("ET_0" in p.name for p in files), "the newer photos lost their names"
 
 
-def test_overwritten_photo_is_not_saved_as_part_of_the_photo_that_replaced_it(tmp_path):
+@pytest.mark.parametrize("in_pieces", [False, True])
+def test_overwritten_photo_is_not_saved_as_part_of_the_photo_that_replaced_it(tmp_path, in_pieces):
     """Seen on a real card: a deleted photo's space was reused by a later, bigger photo that begins
     at the same place. Its folder entry survives, but what is there now is the later photo."""
     from photorecover.synth.fatbuilder import FatBuilder
@@ -417,10 +418,13 @@ def test_overwritten_photo_is_not_saved_as_part_of_the_photo_that_replaced_it(tm
     b.write("DCIM/KEEP_0.JPG", make_photo(80, 800, 600))
     first = b.next_free
     gone = b.write("DCIM/GONE.JPG", make_photo(81, 1024, 768))
+    if in_pieces:       # the photo that replaces it has to go round another file, so it is only finished later
+        b.write("DCIM/KEEP_1.JPG", make_photo(83, 800, 600))
     b.delete("DCIM/GONE.JPG")
     b.next_free = first
     later = b.write("DCIM/LATER.JPG", make_photo(82, 1600, 1200))
     assert later.clusters[0] == gone.clusters[0] and len(later.clusters) > len(gone.clusters)
+    assert later.fragmented == in_pieces
     b.delete_all()
     rec = run(tmp_path, b)
     check(rec, b, tmp_path, expect_all_recoverable=False)
