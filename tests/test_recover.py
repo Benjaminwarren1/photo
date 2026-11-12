@@ -535,3 +535,35 @@ def test_files_in_an_unreadable_part_of_a_failing_card_are_never_passed_off_as_g
     assert sum(t.sha256 in got for t in clear) >= len(clear) - 1
     assert sum("could not be read" in i.note for i in rec.items) >= 1
     assert "failing" in (tmp_path / "out" / "report.html").read_text()
+
+
+@pytest.mark.parametrize("fat_type,wipe", [(32, "boot"), (32, "front"), ("exfat", "boot"), ("exfat", "front"), (16, "table")])
+def test_card_that_windows_says_needs_formatting(tmp_path, fat_type, wipe):
+    """The first sectors of the card are damaged, so a computer no longer recognises it. FAT32 and
+    exFAT keep a spare copy of the boot sector a little further in; with that the card reads as before."""
+    b = used_card(fat_type=fat_type, cluster_size=32768 if fat_type == "exfat" else 4096,
+                  size_mb=160 if fat_type == "exfat" else 64, seed=61, photos=12,
+                  **({"width": 1600, "height": 1200} if fat_type == "exfat" else {}))
+    b.delete_all()
+    raw = bytearray(b.tobytes())
+    assert b.part
+    (tmp_path / "whole").mkdir()
+    (tmp_path / "whole" / "card.img").write_bytes(bytes(raw))
+    before = Recovery(tmp_path / "whole" / "card.img", tmp_path / "whole" / "out")
+    before.run()
+    if wipe == "boot":          # only the volume's own first sector
+        raw[b.part:b.part + 512] = bytes(512)
+    elif wipe == "front":       # everything up to and including it, partition table too
+        raw[0:b.part + 512] = bytes(b.part + 512)
+    else:                       # only the partition table
+        raw[0:512] = bytes(512)
+    img = tmp_path / "card.img"
+    img.write_bytes(bytes(raw))
+    rec = Recovery(img, tmp_path / "out")
+    rec.run()
+    assert rec.summary["damaged_start"] and not rec.summary["unreadable"]
+    check(rec, b, tmp_path, expect_all_recoverable=False)
+    same = lambda r: sorted((i.name, i.grade, i.saved_as, i.out_bytes) for i in r.items)
+    assert same(rec) == same(before), "the damaged card must give exactly what the undamaged one gives"
+    assert sum(i.grade == "Verified" for i in rec.items) >= 5
+    assert "needs formatting" in (tmp_path / "out" / "report.html").read_text()

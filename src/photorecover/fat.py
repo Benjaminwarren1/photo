@@ -82,11 +82,12 @@ def _slot_ok(a: np.ndarray) -> np.ndarray:
 
 
 class FatVolume:
-    def __init__(self, source, partition_offset: int | None = None):
+    def __init__(self, source, partition_offset: int | None = None, boot_at: int | None = None):
         self.m = _open_ro(source) if isinstance(source, (str, Path)) else source
         offs = [partition_offset] if partition_offset is not None else find_partitions(self.m)
         for off in offs:
-            b = bytes(self.m[off:off + 512])
+            at = off if boot_at is None else boot_at       # boot_at: a spare copy of a damaged boot sector
+            b = bytes(self.m[at:at + 512])
             if _looks_like_bpb(b) and b[3:11] != b"EXFAT   ":
                 self.part = off
                 break
@@ -387,10 +388,47 @@ class FatVolume:
         return ok == len(ents)
 
 
+def find_spare_boot(m, span: int = 64 << 20) -> tuple[str, int, int] | None:
+    """When the start of a card is damaged (the usual reason a computer says it "needs formatting"),
+    look for a boot sector that survives: FAT32 and exFAT each keep a spare copy a few sectors in,
+    and a boot sector also survives when only the partition table in front of it is lost.
+    Returns (kind, where the volume starts, where the usable boot sector is)."""
+    n = min(span, len(m)) // SECTOR
+    if n < 1:
+        return None
+    a = np.frombuffer(m, np.uint8, n * SECTOR).reshape(n, SECTOR)
+    cand = np.flatnonzero((a[:, 510] == 0x55) & (a[:, 511] == 0xAA) & ((a[:, 0] == 0xEB) | (a[:, 0] == 0xE9)))
+    for i in cand.tolist():
+        at = i * SECTOR
+        b = bytes(m[at:at + SECTOR])
+        if b[3:11] == b"EXFAT   ":
+            (start,) = struct.unpack_from("<Q", b, 64)
+            for vol in (start * SECTOR, at - 12 * SECTOR, at):
+                if 0 <= vol <= at and at - vol in (0, 12 * SECTOR):
+                    return "exfat", vol, at
+        elif _looks_like_bpb(b):
+            (hidden,) = struct.unpack_from("<I", b, 28)
+            fat32 = struct.unpack_from("<H", b, 22)[0] == 0
+            spare = struct.unpack_from("<H", b, 50)[0] * SECTOR if fat32 else 0
+            for vol in (hidden * SECTOR, at - spare, at):
+                if 0 <= vol <= at and at - vol in (0, spare):
+                    return "fat", vol, at
+    return None
+
+
 def open_volume(source):
     """Open whatever file system the image holds: FAT16, FAT32 or exFAT."""
     from .exfat import ExFatVolume, find_exfat
     m = _open_ro(source) if isinstance(source, (str, Path)) else source
-    if find_exfat(m) is not None:
-        return ExFatVolume(m)
-    return FatVolume(m)
+    try:
+        if find_exfat(m) is not None:
+            return ExFatVolume(m)
+        return FatVolume(m)
+    except NotFat:
+        found = find_spare_boot(m)
+        if found is None:
+            raise
+        kind, part, at = found
+        vol = ExFatVolume(m, part, boot_at=at) if kind == "exfat" else FatVolume(m, part, boot_at=at)
+        vol.repaired = True
+        return vol

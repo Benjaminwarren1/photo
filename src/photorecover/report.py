@@ -37,6 +37,9 @@ def write_html(path: Path, summary: dict, rows: list[dict]) -> None:
             "worked out from what is still on it."
             + (f" {summary['since_format']} files deleted since that format were looked for first, in the card's current layout."
                if summary.get("since_format") else "") + "</p>") if summary.get("old_layout") else "",
+           ("<p>The start of this card was damaged, which is what makes a computer say the card needs formatting. "
+            "A spare copy of the card's layout was found further in and used to read it. Do not format the card.</p>")
+           if summary.get("damaged_start") else "",
            (f"<p>The card is failing: {summary['unreadable_bytes'] / 1e6:.1f} MB of it could not be read when it was "
             "copied, and is blank in the copy. Every file below that touches one of those areas says so in its note.</p>")
            if summary.get("unreadable_bytes") else "",

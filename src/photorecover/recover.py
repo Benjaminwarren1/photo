@@ -307,6 +307,9 @@ class Recovery:
         try:
             self.vol = open_volume(image)
             self.unreadable = ""
+            if getattr(self.vol, "repaired", False):
+                self.log("The start of this card is damaged, which is why a computer says it needs formatting. "
+                         "A spare copy of its layout was found on the card and is being used")
         except NotFat:
             from .fat import _open_ro
             from .legacy import open_unreadable
@@ -783,6 +786,7 @@ class Recovery:
                                    for i, (m, t) in enumerate(self.steps)],
                             old_layout=self.old_layout, unreadable=self.unreadable)
         self.summary["since_format"] = len(newer.items) if newer is not None else 0
+        self.summary["damaged_start"] = bool(getattr(self.vol if newer is None else newer.vol, "repaired", False))
         self.summary["unreadable_bytes"] = sum(b - a for a, b in self.blank_ranges)
         if self.out and self._only is None:
             self._write_report()

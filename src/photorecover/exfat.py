@@ -44,13 +44,14 @@ class ExFatVolume:
     fat_bits = 0            # not a FAT16/FAT32 volume
     kind = "exFAT"
 
-    def __init__(self, source, partition_offset: int | None = None):
+    def __init__(self, source, partition_offset: int | None = None, boot_at: int | None = None):
         self.m = _open_ro(source) if isinstance(source, (str, Path)) else source
         off = partition_offset if partition_offset is not None else find_exfat(self.m)
         if off is None:
             raise NotFat("no exFAT volume found in this image")
         self.part = off
-        b = bytes(self.m[off:off + 512])
+        at = off if boot_at is None else boot_at            # boot_at: the spare copy of a damaged boot sector
+        b = bytes(self.m[at:at + 512])
         (_po, _vl, fat_sec, fat_len, heap_sec, ncl, root) = struct.unpack_from("<QQIIIII", b, 64)
         bps_shift, spc_shift = b[108], b[109]
         if not 9 <= bps_shift <= 12 or spc_shift > 25 - bps_shift:
