@@ -316,7 +316,11 @@ class Rebuilder:
             another photo's data can do it. The picture it makes must also look like this photo,
             piece by piece, by the photo's own standard. An average over the whole tail is not
             enough, because a preview that is mostly dark forgives almost anything on average."""
-            new = (b.scores[len(w.scores):] if has_preview else b.seams[len(w.seams):])
+            if not has_preview:
+                # Without a preview there is only the join between rows to go on, and in a small
+                # or busy picture that varies too much from piece to piece to judge each alone.
+                return True
+            new = b.scores[len(w.scores):]
             if len(new) < 2:
                 return True
             bar = CEILING * lim_of(w)
