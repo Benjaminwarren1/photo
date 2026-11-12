@@ -137,6 +137,41 @@ def _valid_png(data) -> bool:
     return False
 
 
+def png_length(buf, pos: int, end: int) -> int | None:
+    """Length of the PNG that starts at pos, if every one of its parts passes its own checksum."""
+    import zlib
+    if bytes(buf[pos:pos + 8]) != b"\x89PNG\r\n\x1a\n":
+        return None
+    p, first = pos + 8, True
+    while p + 12 <= end:
+        ln, typ = struct.unpack_from(">I4s", buf, p)
+        if p + 12 + ln > end or ln > 1 << 30 or (first and typ != b"IHDR"):
+            return None
+        if zlib.crc32(buf[p + 4:p + 8 + ln]) != struct.unpack_from(">I", buf, p + 8 + ln)[0]:
+            return None
+        p, first = p + 12 + ln, False
+        if typ == b"IEND":
+            return p - pos
+    return None
+
+
+def boxes_length(buf, pos: int, end: int) -> tuple[int, set, bytes] | None:
+    """Follow the top-level boxes of a video or HEIC file that starts at pos for as long as they
+    run on. Returns (length, box types seen, brand), or None if it does not begin like one."""
+    if bytes(buf[pos + 4:pos + 8]) != b"ftyp":
+        return None
+    brand, p, seen = bytes(buf[pos + 8:pos + 12]), pos, set()
+    while p + 8 <= end:
+        size, typ = struct.unpack_from(">I4s", buf, p)
+        if size == 1 and p + 16 <= end:
+            (size,) = struct.unpack_from(">Q", buf, p + 8)
+        if size < 8 or typ not in BOX_TYPES or p + size > end or (typ == b"ftyp" and p != pos):
+            break
+        seen.add(typ)
+        p += size
+    return (p - pos, seen, brand) if len(seen) >= 2 else None
+
+
 def check_other(ext: str, data) -> str | None:
     """'verified', 'unverified' or None (clearly not this file any more)."""
     sig = SIGNATURES.get(ext)
@@ -325,14 +360,23 @@ class Recovery:
         return bool(sig and sig[1] and head[sig[0]:sig[0] + len(sig[1])] == sig[1])
 
     def _photo_starts(self, avail: np.ndarray) -> list[int]:
-        """Unclaimed clusters that begin the way a JPEG begins."""
+        """Unclaimed clusters that begin the way a JPEG begins. The same read of the card also
+        notes (in self._other_starts) those that begin the way a PNG or a video does."""
         vol, out = self.vol, []
+        self._other_starts: list[tuple[int, str]] = []
         step = max(1, (64 << 20) // vol.cl)
         for c0 in range(2, vol.max_cluster + 1, step):
             n = min(step, vol.max_cluster + 1 - c0)
             a = np.frombuffer(vol.m, np.uint8, n * vol.cl, vol.data_off + (c0 - 2) * vol.cl).reshape(n, vol.cl)
-            hit = (a[:, 0] == 0xFF) & (a[:, 1] == 0xD8) & (a[:, 2] == 0xFF) & avail[c0:c0 + n]
+            free = avail[c0:c0 + n]
+            hit = (a[:, 0] == 0xFF) & (a[:, 1] == 0xD8) & (a[:, 2] == 0xFF) & free
             out += (np.flatnonzero(hit) + c0).tolist()
+            if vol.cl >= 8:
+                png = (a[:, 0] == 0x89) & (a[:, 1] == 0x50) & (a[:, 2] == 0x4E) & (a[:, 3] == 0x47) & free
+                vid = (a[:, 4] == 0x66) & (a[:, 5] == 0x74) & (a[:, 6] == 0x79) & (a[:, 7] == 0x70) & free
+                self._other_starts += [(int(c) + c0, "png") for c in np.flatnonzero(png)]
+                self._other_starts += [(int(c) + c0, "ftyp") for c in np.flatnonzero(vid)]
+        self._other_starts.sort()
         return out
 
     def run(self) -> dict:
@@ -574,7 +618,7 @@ class Recovery:
                 it.note = "its space was reused by a later file"
 
         # Pass 3: photos with no folder entry left at all.
-        heads = self._photo_starts(avail) if self._only is None else []
+        heads = self._photo_starts(avail) if self._only is None else None
         if heads:
             self.log(f"Looking at {len(heads)} photo starts that have no folder entry")
         found: list[Item] = []
@@ -629,6 +673,59 @@ class Recovery:
             self.progress = (k, len(again))
             if avail[c]:
                 carve(c, True)
+        # Pass 4: pictures of other kinds, and videos, with no folder entry left. A PNG carries a
+        # checksum on every part and a video an index of every frame, so each is taken only when
+        # its own contents vouch for it.
+        others_found = [(c, k) for c, k in getattr(self, "_other_starts", []) if avail[c]] if heads is not None else []
+        if others_found:
+            self.log(f"Looking at {len(others_found)} other pictures and videos that have no folder entry")
+        data_end = vol.data_off + (vol.max_cluster - 1) * cl
+        numbers = {"png": 0, "video": 0, "heic": 0}
+
+        def found_other(c, kind, ext, size, chain, grade, note, percent=100.0):
+            numbers[kind] += 1
+            it = Item(name=f"found_{kind}_{numbers[kind]:05d}.{ext}", folder="Found by scanning", size=size, start=c,
+                      kind="other", source="found by scanning", grade=grade, percent=percent,
+                      method="found whole" if all(b == a + 1 for a, b in zip(chain, chain[1:])) else "rebuilt from pieces",
+                      note=note, chain=chain)
+            claim([x for x in chain if x >= 0])
+            items.append(it)
+
+        def one_other(c: int, kind: str) -> None:
+            pos = vol.data_off + (c - 2) * cl
+            if kind == "png":
+                size = png_length(vol.m, pos, data_end)
+                chain = list(range(c, c + -(-size // cl))) if size else []
+                if size and avail[chain].all():
+                    found_other(c, "png", "png", size, chain, GRADE_VERIFIED, "every part of it passes its own checksum")
+                return
+            got = boxes_length(vol.m, pos, data_end)
+            if got is None:
+                return
+            size, seen, brand = got
+            chain = list(range(c, c + -(-size // cl)))
+            if not avail[chain].all():
+                return
+            if b"moov" in seen or b"moof" in seen:
+                ext = "mov" if brand == b"qt  " else "3gp" if brand[:2] == b"3g" else "mp4"
+                v = vr.rebuild(c, size) if b"moov" in seen else None
+                if v is not None and v.status == "complete" and not v.uncertain_joins and \
+                        avail[np.asarray(v.chain, np.int64)].all():
+                    found_other(c, "video", ext, size, v.chain, GRADE_VERIFIED,
+                                f"all {v.checked} frame and sound checkpoints match")
+                elif b"mdat" in seen:
+                    found_other(c, "video", ext, size, chain, GRADE_UNVERIFIED,
+                                "its parts line up from start to end, but its frames could not be checked; "
+                                "watch it through to make sure")
+            elif brand in (b"heic", b"heix", b"mif1", b"msf1", b"avif") and b"meta" in seen and b"mdat" in seen:
+                found_other(c, "heic", "avif" if brand == b"avif" else "heic", size, chain, GRADE_UNVERIFIED,
+                            "its parts line up from start to end; this file type cannot be checked further")
+
+        for k, (c, kind) in enumerate(others_found):
+            self.progress = (k, len(others_found))
+            if avail[c]:
+                attempt(None, one_other, c, kind)
+
         stale: dict[int, list[Item]] = {}
         for old in items:
             if old.kind == "jpeg" and old.grade in (GRADE_REVIEW, GRADE_PARTIAL):

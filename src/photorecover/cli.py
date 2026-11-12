@@ -73,7 +73,12 @@ def main(argv=None) -> int:
         if not a.status:
             # a drive may be named the way "drives" lists it; and reading one needs administrator
             # rights on Windows, which only the helper started below asks for
-            known = next((d for d in device.list_drives() if a.source in (d.id, d.path)), None)
+            want = a.source.lower().replace("\\\\.\\", "")
+            known = next((d for d in device.list_drives()
+                          if want in (d.id.lower(), d.path.lower().replace("\\\\.\\", ""))), None)
+            if known is None and sys.platform == "win32" and want.startswith("physicaldrive") and want[13:].isdigit():
+                # the drive list could not be read (it comes from PowerShell); the name is still enough
+                known = device.Drive(f"PhysicalDrive{want[13:]}", rf"\\.\PhysicalDrive{want[13:]}", a.size or 0, "", True, False)
             if known is not None:
                 a.source, a.size = known.path, a.size or known.size
             why = device.dest_problem(Path(a.dest).parent, a.size)

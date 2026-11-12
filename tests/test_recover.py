@@ -428,3 +428,38 @@ def test_overwritten_photo_is_not_saved_as_part_of_the_photo_that_replaced_it(tm
     assert it.grade == "Not recoverable" and not it.saved_as, (it.grade, it.note, it.saved_as)
     assert "different file" in it.note
     assert not list((tmp_path / "out").glob("Recovered - Partial/**/*ONE*"))
+
+
+def test_pngs_and_videos_with_no_folder_entry_are_found(tmp_path):
+    """With the folder gone, a PNG (checksums) and a video (frame index) can still vouch for themselves."""
+    import io
+    import random
+    from PIL import Image
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    from photorecover.synth.videos import make_video
+    b = FatBuilder(96, 16, 8192)
+    rnd = random.Random(5)
+    buf = io.BytesIO()
+    Image.frombytes("RGB", (300, 200), bytes(rnd.randrange(256) for _ in range(180000))).save(buf, "PNG")
+    files = {"DCIM/SHOT.PNG": buf.getvalue(),
+             "DCIM/A.MP4": make_video(71, frames=90, moov_first=False),
+             "DCIM/B.MP4": make_video(72, frames=120, moov_first=True)}
+    cut = bytearray(buf.getvalue())
+    cut[len(cut) // 2] ^= 0xFF
+    b.write("DCIM/IMG_0001.JPG", make_photo(801, 800, 600))
+    for name, data in files.items():
+        b.write(name, data)
+    b.write("DCIM/BAD.PNG", bytes(cut))
+    b.delete_all()
+    for c in b._dirs["DCIM"].clusters:
+        off = b.cluster_off(c)
+        b.img[off:off + b.cl] = bytes(b.cl)
+    rec = run(tmp_path, b)
+    check(rec, b, tmp_path, expect_all_recoverable=False)
+    saved = {(tmp_path / "out" / i.saved_as).read_bytes(): i for i in rec.items if i.saved_as}
+    for name, data in files.items():
+        assert data in saved, f"{name} was not found"
+        assert saved[data].grade == "Verified", (name, saved[data].grade, saved[data].note)
+    assert bytes(cut) not in saved and not any(i.name.endswith(".png") and i.size != len(files["DCIM/SHOT.PNG"])
+                                               for i in rec.items)

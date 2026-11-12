@@ -21,7 +21,7 @@ jobs:
       - run: python -m pip install . pyinstaller
       - run: python -c "from photorecover import jpeg; assert jpeg.HAVE_C, 'C decoder was not built'"
       # A folder, not a single self-extracting file: fewer antivirus false alarms and a faster start.
-      - run: pyinstaller --noconfirm --clean --name PhotoRecovery --console packaging/entry.py
+      - run: pyinstaller --noconfirm --clean --noupx --name PhotoRecovery --console --version-file packaging/version_info.txt packaging/entry.py
       - name: Smoke test the packaged program on a synthetic card
         shell: bash
         run: |
