@@ -567,3 +567,34 @@ def test_card_that_windows_says_needs_formatting(tmp_path, fat_type, wipe):
     assert same(rec) == same(before), "the damaged card must give exactly what the undamaged one gives"
     assert sum(i.grade == "Verified" for i in rec.items) >= 5
     assert "needs formatting" in (tmp_path / "out" / "report.html").read_text()
+
+
+@pytest.mark.parametrize("damaged", [False, True])
+def test_files_never_deleted_are_reported_and_saved_when_the_card_will_not_open(tmp_path, damaged):
+    """Seen on a real card: nothing lost could be recovered, but 23 photos were sitting on it as
+    normal files, and the report said nothing about them to someone about to format it."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    b = FatBuilder(64, 32, 4096)
+    b.mkdir("DCIM")
+    kept = {f"KEEP_{i}.JPG": make_photo(900 + i, 800, 600) for i in range(5)}
+    for name, data in kept.items():
+        b.write("DCIM/" + name, data)
+    b.write("DCIM/GONE.JPG", make_photo(950, 800, 600))
+    b.delete("DCIM/GONE.JPG")
+    raw = bytearray(b.tobytes())
+    if damaged:
+        raw[b.part:b.part + 512] = bytes(512)
+    img = tmp_path / "card.img"
+    img.write_bytes(bytes(raw))
+    rec = Recovery(img, tmp_path / "out")
+    rec.run()
+    still = rec.summary["still_on_card"]
+    assert still["files"] == 5 and still["photos"] == 5 and still["saved"] == damaged
+    html = (tmp_path / "out" / "report.html").read_text()
+    assert "5 files are still on the card" in html
+    saved = {p.name: p.read_bytes() for p in (tmp_path / "out").rglob("KEEP_*.JPG")}
+    assert saved == (kept if damaged else {})
+    assert ("Before formatting" in html or "before formatting" in html) != damaged
+    lost = [i for i in rec.items if i.source == "deleted entry"]
+    assert len(lost) == 1 and lost[0].grade in ("Verified", "Complete, no preview"), [(i.name, i.grade, i.note) for i in lost]

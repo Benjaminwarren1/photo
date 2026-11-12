@@ -38,6 +38,8 @@ def main(argv=None) -> int:
     r.add_argument("image", type=Path, help="raw image of the card (a .img or .dd file)")
     r.add_argument("--out", type=Path, help="output folder (default: '<image name> recovered' next to the image)")
     r.add_argument("--json", action="store_true", help="print the summary as JSON, for other programs")
+    r.add_argument("--include-existing", action="store_true",
+                   help="also copy out the files that were never deleted (always done when the card's start is damaged)")
     r.add_argument("--profile", type=Path, help="for developers: write where the time went to this text file")
     p = sub.add_parser("pilot", help="recover, then let another program decide the close calls using JSON lines")
     p.add_argument("image", type=Path)
@@ -143,6 +145,7 @@ def main(argv=None) -> int:
     except NotFat as e:
         print(f"Cannot read this card image: {e}", file=sys.stderr)
         return 3
+    rec.include_existing = bool(getattr(a, "include_existing", False))
     if a.cmd == "pilot":
         rec.log = lambda m: None
         return pilot(rec, out)
@@ -164,6 +167,10 @@ def main(argv=None) -> int:
         print()
         for grade, n in summary["counts"].items():
             print(f"  {n:6d}  {grade}")
+        still = summary.get("still_on_card")
+        if still and not still["saved"]:
+            print(f"\n  {still['files']} files are still on the card as normal files ({still['photos']} photos, "
+                  f"{still['videos']} videos). They are not lost and were not copied; copy them off before formatting.")
         print(f"\nSaved to: {out}\nFull details: {out / 'report.html'}")
     return 0
 

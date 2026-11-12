@@ -81,7 +81,89 @@ def _slot_ok(a: np.ndarray) -> np.ndarray:
     return lfn | plain
 
 
+SURVEY_MAGIC = dict(jpg=(0, b"\xff\xd8\xff"), png=(0, b"\x89PNG"), mp4=(4, b"ftyp"), zip=(0, b"PK\x03\x04"),
+                    gif=(0, b"GIF8"))
+
+
+class Survey:
+    """One read of the whole card, 512 bytes at a time, noting everything the later steps want to
+    know about each sector: is it blank, does a known kind of file begin there, and could it be
+    the start of folder data. On a big card each full read takes minutes, so it is done once."""
+
+    def __init__(self, m, progress=None, workers: int | None = None):
+        import os
+        from concurrent.futures import ThreadPoolExecutor
+        n = len(m) // SECTOR
+        per = (32 << 20) // SECTOR
+        starts = list(range(0, n, per))
+
+        def one(s0: int):
+            k = min(per, n - s0)
+            a = np.frombuffer(m, np.uint8, k * SECTOR, s0 * SECTOR).reshape(k, SECTOR)
+            same = (a[:, 0] == a[:, 1]) & (a[:, 0] == a[:, 255]) & (a[:, 0] == a[:, 511])
+            idx = np.flatnonzero(same)
+            if len(idx):
+                rows = a if len(idx) == k else a[idx]
+                same[idx] = (rows == rows[:, :1]).all(axis=1)
+            sig = {}
+            for kind, (o, magic) in SURVEY_MAGIC.items():
+                ok = a[:, o] == magic[0]
+                for i in range(1, len(magic)):
+                    ok &= a[:, o + i] == magic[i]
+                sig[kind] = np.flatnonzero(ok) + s0
+            keep = (a[:, 0] != 0) & ~same & _slot_ok(a[:, :32])
+            keep &= (a[:, 32] == 0) | _slot_ok(a[:, 32:64])
+            return np.packbits(same), sig, np.flatnonzero(keep) + s0
+
+        parts = []
+        with ThreadPoolExecutor(workers or min(8, os.cpu_count() or 2)) as pool:
+            for i, r in enumerate(pool.map(one, starts)):
+                parts.append(r)
+                if progress:
+                    progress(i + 1, len(starts))
+        self.n = n
+        self._per = per
+        self._same = [p[0] for p in parts]                       # packed bits, one array per stretch
+        self.sigs = {kind: (np.concatenate([p[1][kind] for p in parts]) if parts else np.zeros(0, np.int64))
+                     for kind in SURVEY_MAGIC}
+        self.dirs = np.concatenate([p[2] for p in parts]) if parts else np.zeros(0, np.int64)
+
+    def blank(self, s0: int, count: int) -> np.ndarray:
+        """Boolean per sector for sectors s0 .. s0+count: every byte in it the same."""
+        out = np.zeros(count, bool)
+        for i in range(s0 // self._per, min(len(self._same), -(-(s0 + count) // self._per))):
+            base = i * self._per
+            bits = np.unpackbits(self._same[i]).astype(bool)[:min(self._per, self.n - base)]
+            a, b = max(s0, base), min(s0 + count, base + len(bits))
+            if b > a:
+                out[a - s0:b - s0] = bits[a - base:b - base]
+        return out
+
+    def starts(self, kind: str, data_off: int, cl: int, max_cluster: int) -> np.ndarray:
+        """Cluster numbers, in a layout, that begin the way this kind of file begins."""
+        pos = self.sigs[kind].astype(np.int64) * SECTOR - data_off
+        pos = pos[(pos >= 0) & (pos % cl == 0)]
+        c = pos // cl + 2
+        return c[c <= max_cluster]
+
+
+def blank_from_survey(vol) -> np.ndarray | None:
+    """blank_clusters() answered from the survey, when the layout sits on whole sectors."""
+    sv = getattr(vol, "survey", None)
+    if sv is None or vol.data_off % SECTOR or vol.cl % SECTOR:
+        return None
+    spc, out = vol.cl // SECTOR, np.zeros(vol.ncl + 2, bool)
+    step = max(1, (64 << 20) // spc)
+    for c0 in range(2, vol.max_cluster + 1, step):
+        n = min(step, vol.max_cluster + 1 - c0)
+        bits = sv.blank(vol.data_off // SECTOR + (c0 - 2) * spc, n * spc)
+        out[c0:c0 + n] = bits.reshape(n, spc).all(axis=1)
+    return out
+
+
 class FatVolume:
+    survey: Survey | None = None
+
     def __init__(self, source, partition_offset: int | None = None, boot_at: int | None = None):
         self.m = _open_ro(source) if isinstance(source, (str, Path)) else source
         offs = [partition_offset] if partition_offset is not None else find_partitions(self.m)
@@ -172,6 +254,9 @@ class FatVolume:
 
     def blank_clusters(self) -> np.ndarray:
         """Boolean per cluster number: every byte the same (never-used or erased space)."""
+        known = blank_from_survey(self)
+        if known is not None:
+            return known
         out = np.zeros(self.ncl + 2, bool)
         step = max(1, (64 << 20) // self.cl)
         for c0 in range(2, self.max_cluster + 1, step):
@@ -181,13 +266,15 @@ class FatVolume:
         return out
 
     # ---- directories ------------------------------------------------------
-    def parse_dir(self, buf: bytes, where: int) -> tuple[list[Entry], int, int]:
+    def parse_dir(self, buf: bytes, where: int, stop_on_bad: bool = False) -> tuple[list[Entry], int, int]:
         """Returns (entries, used_slots, bad_slots) for a block of 32-byte slots."""
         out: list[Entry] = []
         lfn: list[str] = []
         used = bad = 0
         ended = False
         for o in range(0, len(buf) - 31, 32):
+            if bad and stop_on_bad:
+                break
             e = buf[o:o + 32]
             if e[0] == 0:
                 # The end of the folder. Usually nothing but zeros follows, but some devices leave
@@ -292,19 +379,31 @@ class FatVolume:
         # sweep every cluster for directory-shaped data; most are ruled out many at a time
         m, cl = self.m, self.cl
         orphans: list[tuple[int, list[Entry]]] = []
+        spc = max(1, cl // SECTOR)
+        sec = cl // spc
+        sv = self.survey if (self.survey is not None and sec == SECTOR and self.data_off % SECTOR == 0) else None
         step = max(1, (32 << 20) // cl)
-        for c0 in range(2, self.max_cluster + 1, step):
-            n = min(step, self.max_cluster + 1 - c0)
-            if progress:
-                progress(c0, self.max_cluster)
-            spc = max(1, cl // SECTOR)
-            sec = cl // spc
-            a = np.frombuffer(m, np.uint8, n * cl, self.data_off + (c0 - 2) * cl).reshape(n * spc, sec)
-            keep = (a[:, 0] != 0) & _slot_ok(a[:, :32])
-            if sec >= 64:
-                keep &= (a[:, 32] == 0) | _slot_ok(a[:, 32:64])
-            keep = keep.reshape(n, spc)
-            for i in np.flatnonzero(keep.any(axis=1)).tolist():
+        for c0 in ([2] if sv is not None else range(2, self.max_cluster + 1, step)):
+            if sv is not None:
+                # the survey has already picked out the sectors that could begin folder data
+                rel = sv.dirs - self.data_off // SECTOR
+                rel = rel[(rel >= 0) & (rel < self.ncl * spc)]
+                n = self.ncl
+                rows, cols = rel // spc, rel % spc
+                keep_rows = np.unique(rows)
+                by_row = dict(zip(keep_rows.tolist(), np.split(cols, np.flatnonzero(np.diff(rows)) + 1))) if len(rows) else {}
+            else:
+                n = min(step, self.max_cluster + 1 - c0)
+                if progress:
+                    progress(c0, self.max_cluster)
+                a = np.frombuffer(m, np.uint8, n * cl, self.data_off + (c0 - 2) * cl).reshape(n * spc, sec)
+                keep = (a[:, 0] != 0) & _slot_ok(a[:, :32])
+                if sec >= 64:
+                    keep &= (a[:, 32] == 0) | _slot_ok(a[:, 32:64])
+                keep = keep.reshape(n, spc)
+                keep_rows = np.flatnonzero(keep.any(axis=1))
+                by_row = {i: np.flatnonzero(keep[i]) for i in keep_rows.tolist()}
+            for i in keep_rows.tolist():
                 c = i + c0
                 if c in seen_clusters:
                     continue
@@ -312,7 +411,7 @@ class FatVolume:
                 # The whole cluster first. If that is not a folder, any run of sectors inside it
                 # that is: a folder's later part can outlive its start, and an older layout's
                 # folders do not begin where this layout's clusters do.
-                secs = np.flatnonzero(keep[i]).tolist()
+                secs = by_row[i].tolist()
                 pieces = ([(0, cl)] if secs[0] == 0 else []) + [(j * sec, cl) for j in secs if j] + \
                     [(j * sec, (j + 1) * sec) for j in secs]
                 done_to, got = -1, []
@@ -322,7 +421,7 @@ class FatVolume:
                     buf = m[o + a0:o + a1]
                     self.strict = True
                     try:
-                        ents, used, bad = self.parse_dir(buf, c)
+                        ents, used, bad = self.parse_dir(buf, c, stop_on_bad=True)
                     finally:
                         self.strict = False
                     real = [e for e in ents if e.short not in (".", "..")]

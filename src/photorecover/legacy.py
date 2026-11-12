@@ -75,7 +75,7 @@ class LegacyFatVolume(FatVolume):
         return iter(())
 
 
-MAGIC = dict(jpg=(0, b"\xff\xd8\xff"), png=(0, b"\x89PNG"), mp4=(4, b"ftyp"), zip=(0, b"PK\x03\x04"), gif=(0, b"GIF8"))
+from .fat import SURVEY_MAGIC as MAGIC  # noqa: E402
 
 
 def _signature_maps(m) -> dict[str, np.ndarray]:
@@ -139,16 +139,21 @@ def find_old_layout(vol: FatVolume, entries: list[Entry], log=None):
     return _infer(vol.m, vol, log, entries)
 
 
-def _infer(m, vol: FatVolume | None, log=None, entries: list[Entry] | None = None):
+def _infer(m, vol: FatVolume | None, log=None, entries: list[Entry] | None = None, survey=None):
     """Work out an earlier layout from the folders and photo starts found on the card."""
     total = len(m) // SECTOR
-    sigs = _signature_maps(m)
+    survey = survey if survey is not None else getattr(vol, "survey", None)
+    sigs = survey.sigs if survey is not None else _signature_maps(m)
     if vol is not None and entries is not None and vol.data_off % SECTOR == 0:
         # The card's own sweep has already read every sector of its data area for folders,
         # whichever layout they belong to. Only the part in front of that is left to look at.
-        found = [e for e in entries if not e.in_tree] + _Sectors(m, vol.data_off).scan_entries()
+        front = _Sectors(m, vol.data_off)
+        front.survey = survey
+        found = [e for e in entries if not e.in_tree] + front.scan_entries()
     else:
-        found = _Sectors(m).scan_entries()
+        whole = _Sectors(m)
+        whole.survey = survey
+        found = whole.scan_entries()
     # Only files that the current layout cannot account for say anything about an older one.
     old_entries = [e for e in found
                    if not e.is_dir and e.size > 0 and _kind(e) and (vol is None or not _explained(vol, e))]
@@ -163,7 +168,7 @@ def _infer(m, vol: FatVolume | None, log=None, entries: list[Entry] | None = Non
                     log("The card has folders from before it was last formatted; working out how it was laid out then")
                 log(f"Found the old layout: {cs // 1024 or cs} {'KB' if cs >= 1024 else 'byte'} blocks; "
                     f"{best} of {testable} listed files start exactly where it says")
-            return LegacyFatVolume(m, cs, off, vol)
+            return _with(LegacyFatVolume(m, cs, off, vol), survey)
     # no folder entries to go on: fall back on where photos start
     pos = sigs["jpg"].astype(np.int64) * SECTOR
     sizes = CLUSTER_SIZES
@@ -181,8 +186,13 @@ def _infer(m, vol: FatVolume | None, log=None, entries: list[Entry] | None = Non
                 if log:
                     log("No old folders survive, but photos on the card line up with an older layout" if vol is not None
                         else f"Photos on this drive start every {cs // 1024 or cs} {'KB' if cs >= 1024 else 'bytes'}; using that to find them")
-                return LegacyFatVolume(m, cs, off, vol)
+                return _with(LegacyFatVolume(m, cs, off, vol), survey)
     return None
+
+
+def _with(vol, survey):
+    vol.survey = survey
+    return vol
 
 
 def _same_files(m, entries: list[Entry], cs: int, off: int, best: int, testable: int) -> bool:
@@ -235,9 +245,12 @@ def open_unreadable(m, log=None) -> UnreadableVolume:
     what = _format_name(m)
     if log:
         log(f"This drive has {what}. Its folders cannot be read, so the drive itself is searched for photos")
-    found = _infer(m, None, log)
+    from .fat import Survey
+    survey = Survey(m)
+    found = _infer(m, None, log, survey=survey)
     cs, off = (found.cl, found.data_off) if found is not None else (4096, 0)
     v = UnreadableVolume(m, cs, off)
+    v.survey = survey
     v.what = what
     return v
 

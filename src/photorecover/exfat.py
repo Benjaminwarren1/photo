@@ -105,7 +105,13 @@ class ExFatVolume:
                 return None
             c = nx
 
+    survey = None
+
     def blank_clusters(self) -> np.ndarray:
+        from .fat import blank_from_survey
+        known = blank_from_survey(self)
+        if known is not None:
+            return known
         out = np.zeros(self.ncl + 2, bool)
         step = max(1, (64 << 20) // self.cl)
         for c0 in range(2, self.max_cluster + 1, step):

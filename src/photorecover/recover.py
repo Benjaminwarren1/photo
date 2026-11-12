@@ -39,6 +39,7 @@ BOX_TYPES = {b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide", b"uuid", b"me
 FOLDER_OK = "Recovered"
 FOLDER_PARTIAL = "Recovered - Partial"
 FOLDER_FILLED = "Recovered - Preview filled"
+FOLDER_LIVE = "Still on the card"
 
 GRADE_VERIFIED = "Verified"
 GRADE_NO_PREVIEW = "Complete, no preview"
@@ -46,6 +47,10 @@ GRADE_UNVERIFIED = "Recovered, unverified"
 GRADE_PARTIAL = "Partial"
 GRADE_REVIEW = "Needs review"
 GRADE_LOST = "Not recoverable"
+GRADE_LIVE = "Still on the card"
+VIDEO_EXT = {"mp4", "mov", "3gp", "3g2", "m4v", "avi", "mts", "m2ts", "mkv", "lrv"}
+PHOTO_EXT = JPEG_EXT | {"png", "gif", "bmp", "heic", "heif", "mpo", "tif", "tiff", "dng", "nef", "cr2", "cr3", "arw",
+                        "raf", "orf", "rw2", "webp"}
 
 
 @dataclass
@@ -331,6 +336,9 @@ class Recovery:
         self.summary: dict = {}
         self.problems: list[str] = []
         self.always_ask = False
+        self.include_existing = False      # also copy out files that were never deleted
+        self._first_vol = self.vol
+        self._existing: list = []
         self.progress: tuple[int, int] | None = None     # (done, total) within the current step
 
     # ---- helpers ----------------------------------------------------------
@@ -377,6 +385,13 @@ class Recovery:
         notes (in self._other_starts) those that begin the way a PNG or a video does."""
         vol, out = self.vol, []
         self._other_starts: list[tuple[int, str]] = []
+        sv = getattr(vol, "survey", None)
+        if sv is not None and vol.data_off % 512 == 0 and vol.cl % 512 == 0:
+            def at(kind):
+                c = sv.starts(kind, vol.data_off, vol.cl, vol.max_cluster)
+                return c[avail[c]].tolist()
+            self._other_starts = sorted([(c, "png") for c in at("png")] + [(c, "ftyp") for c in at("mp4")])
+            return at("jpg")
         step = max(1, (64 << 20) // vol.cl)
         for c0 in range(2, vol.max_cluster + 1, step):
             n = min(step, vol.max_cluster + 1 - c0)
@@ -400,8 +415,16 @@ class Recovery:
         if self._only is not None:
             entries, old = self._only, None
         else:
+            if getattr(vol, "survey", None) is None:
+                from .fat import Survey
+                self.log("Reading through the whole card once")
+
+                def seen(k, n):
+                    self.progress = (k, n)
+                vol.survey = Survey(vol.m, seen)
             self.log("Reading the card's folders, including deleted ones")
             entries = vol.scan_entries()
+            self._existing = [e for e in entries if e.live and not e.is_dir and e.size > 0 and not e.deleted]
             try:
                 from .legacy import find_old_layout
                 old = None if self.unreadable else find_old_layout(vol, entries, self.log)
@@ -562,13 +585,22 @@ class Recovery:
                 continue
             n = -(-it.size // cl)
             if not vol.valid(it.start) or it.start + n - 1 > vol.max_cluster:
-                it.note = "start cluster is outside the card"
+                it.note = ("the card no longer records where this file was stored" if it.start == 0
+                           else "start cluster is outside the card")
                 continue
             chain = it._hint or list(range(it.start, it.start + n))
             if not avail[chain].all():
                 it.note = "its space was reused by another file"
                 continue
-            verdict = check_other(it.name.rpartition(".")[2].lower(), vol.read_chain(chain, it.size))
+            ext = it.name.rpartition(".")[2].lower() if "." in it.name else ""
+            if ext not in SIGNATURES and bytes(vol.cluster(chain[0])[:8]) == b"\x89PNG\r\n\x1a\n":
+                # a picture saved without its ending (some apps do): check it as what it is, and
+                # give it the ending so that it opens with a double click
+                if not ext:
+                    it.name += ".png"
+                ext = "png"
+            # only kinds that can be checked need reading through; the rest are saved as they are
+            verdict = check_other(ext, vol.read_chain(chain, it.size)) if ext in SIGNATURES else "unverified"
             if verdict is None:
                 it.note = "its space no longer holds this kind of file (overwritten, or stored in pieces)"
                 continue
@@ -786,11 +818,78 @@ class Recovery:
                                    for i, (m, t) in enumerate(self.steps)],
                             old_layout=self.old_layout, unreadable=self.unreadable)
         self.summary["since_format"] = len(newer.items) if newer is not None else 0
+        self.summary["still_on_card"] = self._save_existing() if self._only is None else None
+        if self._only is None:
+            self.summary["counts"] = self._counts()
+            self.summary["files_listed"] = len(self.items)
+            self.summary["problems"] = self.problems[:50]
         self.summary["damaged_start"] = bool(getattr(self.vol if newer is None else newer.vol, "repaired", False))
         self.summary["unreadable_bytes"] = sum(b - a for a, b in self.blank_ranges)
         if self.out and self._only is None:
             self._write_report()
         return self.summary
+
+    def _save_existing(self) -> dict | None:
+        """Files that were never deleted. They are not lost, so normally they are only counted and
+        the report says they are there. When a computer cannot open the card at all (its start is
+        damaged), or when asked, they are copied out too: then they are what the person came for."""
+        vol = self._first_vol
+        live = getattr(self, "_existing", [])
+        if not live:
+            return None
+        kind = lambda e: "photos" if e.ext in PHOTO_EXT else "videos" if e.ext in VIDEO_EXT else "other"
+        info = dict(files=len(live), photos=0, videos=0, other=0, bytes=sum(e.size for e in live), saved=False, folders={})
+        for e in live:
+            info[kind(e)] += 1
+            top = e.path or "(top folder)"
+            info["folders"][top] = info["folders"].get(top, 0) + 1
+        info["folders"] = dict(sorted(info["folders"].items(), key=lambda kv: -kv[1])[:15])
+        save = self.out and (self.include_existing or getattr(vol, "repaired", False))
+        if not save:
+            return info
+        self.log(f"Saving {len(live)} files that are still on the card")
+        taken = self._taken if getattr(self, "_taken", None) is not None else set()
+        for k, e in enumerate(live):
+            self.progress = (k, len(live))
+            it = Item(name=e.name, folder=e.path, size=e.size, start=e.start,
+                      kind="jpeg" if e.ext in JPEG_EXT else "other", source="still on the card", mtime=e.mtime)
+            self.items.append(it)
+            try:
+                chain = vol.hint_chain(e) or vol.chain(e.start)
+                if not chain or len(chain) * vol.cl < e.size:
+                    it.note = "the card's record of where this file is stored is damaged"
+                    continue
+                rel = "/".join([FOLDER_LIVE] + [_safe(p) for p in e.path.split("/") if p] + [_safe(e.name)])
+                k2, base = 1, rel
+                while rel.lower() in taken:
+                    k2 += 1
+                    stem, dot, ext = base.rpartition(".")
+                    rel = f"{stem} ({k2}){dot}{ext}" if dot else f"{base} ({k2})"
+                taken.add(rel.lower())
+                dest = self.out / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                left = e.size
+                with open(dest, "wb") as f:
+                    for c in chain:
+                        if left <= 0:
+                            break
+                        block = vol.cluster(c)[:left]
+                        f.write(block)
+                        left -= len(block)
+                if e.mtime:
+                    try:
+                        y, mo, d, h, mi = e.mtime
+                        ts = time.mktime((y, mo, d, h, mi, 0, 0, 0, -1))
+                        os.utime(dest, (ts, ts))
+                    except (ValueError, OverflowError, OSError):
+                        pass
+                it.grade, it.percent, it.saved_as, it.out_bytes = GRADE_LIVE, 100.0, rel, e.size
+                it.method = "copied as it is"
+            except Exception as ex:  # noqa: BLE001
+                self.problems.append(f"{e.name}: {type(ex).__name__}: {ex}")
+                it.note = "the tool hit an unexpected problem with this file and skipped it"
+        info["saved"] = True
+        return info
 
     def _counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}

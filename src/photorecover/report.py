@@ -4,7 +4,8 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-ORDER = ["Verified", "Complete, no preview", "Recovered, unverified", "Partial", "Needs review", "Not recoverable"]
+ORDER = ["Verified", "Complete, no preview", "Recovered, unverified", "Still on the card", "Partial", "Needs review",
+         "Not recoverable"]
 MEANING = {
     "Verified": "Every check passed, including the match against the photo's own preview.",
     "Complete, no preview": "Structure is complete and correct. There was no preview to compare the picture with.",
@@ -12,14 +13,15 @@ MEANING = {
     "Partial": "The good part is saved. The rest is not on the card.",
     "Needs review": "A close call the tool would not make on its own.",
     "Not recoverable": "Nothing usable is left on the card for this file.",
+    "Still on the card": "Never deleted. Copied from the card exactly as it is.",
 }
 CSS = """
 body{font:15px/1.5 system-ui,Segoe UI,Arial,sans-serif;margin:2rem auto;max-width:70rem;padding:0 1rem;color:#1c1c1c;background:#fff}
 h1{font-size:1.5rem}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.35rem .6rem;border-bottom:1px solid #ddd;vertical-align:top}
-th{background:#f3f3f3}.g0,.g1{color:#136c2e}.g2{color:#7a5b00}.g3,.g4{color:#a14a00}.g5{color:#a11}
+th{background:#f3f3f3}.g0,.g1,.g3{color:#136c2e}.g2{color:#7a5b00}.g4,.g5{color:#a14a00}.g6{color:#a11}
 .sum td{font-size:1.05rem}small{color:#555}
 @media(prefers-color-scheme:dark){body{background:#161616;color:#eee}th{background:#262626}th,td{border-color:#3a3a3a}
-.g0,.g1{color:#6fd08a}.g2{color:#e2c15a}.g3,.g4{color:#f0a060}.g5{color:#ff8080}small{color:#aaa}}
+.g0,.g1,.g3{color:#6fd08a}.g2{color:#e2c15a}.g4,.g5{color:#f0a060}.g6{color:#ff8080}small{color:#aaa}}
 """
 
 
@@ -37,6 +39,7 @@ def write_html(path: Path, summary: dict, rows: list[dict]) -> None:
             "worked out from what is still on it."
             + (f" {summary['since_format']} files deleted since that format were looked for first, in the card's current layout."
                if summary.get("since_format") else "") + "</p>") if summary.get("old_layout") else "",
+           _still(summary.get("still_on_card"), e),
            ("<p>The start of this card was damaged, which is what makes a computer say the card needs formatting. "
             "A spare copy of the card's layout was found further in and used to read it. Do not format the card.</p>")
            if summary.get("damaged_start") else "",
@@ -65,3 +68,21 @@ def write_html(path: Path, summary: dict, rows: list[dict]) -> None:
         out += [f"<tr><td>{e(str(m))}</td><td>{t}</td></tr>" for m, t in summary["steps"]]
         out.append("</table></details>")
     path.write_text("\n".join(out), encoding="utf-8")
+
+
+def _still(info, e) -> str:
+    """What is on the card as ordinary files. Said plainly, because someone about to format a
+    card must not read an empty list of lost files as "there is nothing on it"."""
+    if not info:
+        return ""
+    gb = info["bytes"] / 1e9
+    size = f"{gb:.1f} GB" if gb >= 1 else f"{info['bytes'] / 1e6:.0f} MB"
+    what = ", ".join(f"{info[k]} {k if k != 'other' else 'other files'}" for k in ("photos", "videos", "other") if info[k])
+    where = "; ".join(f"{e(name)} ({n})" for name, n in list(info["folders"].items())[:6])
+    if info["saved"]:
+        tail = "They have been copied into the folder <b>Still on the card</b>, exactly as they are."
+    else:
+        tail = ("They are not lost, so they were not copied: copy them off the card in the usual way. "
+                "<b>Do this before formatting the card.</b>")
+    return (f"<p><b>{info['files']} files are still on the card as normal files</b> ({what}; {size}), "
+            f"for example in {where}. {tail}</p>")
