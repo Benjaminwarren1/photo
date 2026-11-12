@@ -552,8 +552,10 @@ class Recovery:
             if avail[c]:
                 r = carve(c, False)
                 # One that joined a piece by searching nearby, then got stuck, has shown that its
-                # pieces are on the card: it has earned a search of all of it.
-                if r is not None and r.status != "complete" and r.picks:
+                # pieces are on the card: it has earned a search of all of it. So has one with a
+                # preview to judge against, since a photo in many scattered pieces can only be
+                # followed join by join, which the nearby search (all-or-nothing) cannot do.
+                if r is not None and r.status != "complete" and (r.picks or r.has_preview):
                     again.append(c)
         if again:
             self.log(f"Searching the whole card for the rest of {len(again)} of them")
