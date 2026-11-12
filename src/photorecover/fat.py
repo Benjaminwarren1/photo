@@ -65,6 +65,21 @@ def find_partitions(m) -> list[int]:
     return out
 
 
+_NAME_OK = np.ones(256, bool)
+_NAME_OK[:0x20] = False
+_NAME_OK[list(b'"*+,/:;<=>?[\\]|')] = False
+
+
+def _slot_ok(a: np.ndarray) -> np.ndarray:
+    """For many 32-byte folder slots at once: could parse_dir accept this slot? (It never
+    says no to one that parse_dir would take; it exists to skip photo data quickly.)"""
+    attr = a[:, 11]
+    lfn = ((attr & 0x3F) == 0x0F) & (a[:, 12] == 0) & (a[:, 26] == 0) & (a[:, 27] == 0)
+    first = _NAME_OK[a[:, 0]] | (a[:, 0] == 0xE5)
+    plain = ((attr & 0x3F) != 0x0F) & ((attr & 0xC0) == 0) & first & _NAME_OK[a[:, 1:11]].all(axis=1)
+    return lfn | plain
+
+
 class FatVolume:
     def __init__(self, source, partition_offset: int | None = None):
         self.m = _open_ro(source) if isinstance(source, (str, Path)) else source
@@ -250,29 +265,31 @@ class FatVolume:
                 if e.is_dir:
                     dir_path.setdefault(e.start, (path + "/" if path else "") + e.name)
                 out.append(e)
-        # sweep every cluster for directory-shaped data
+        # sweep every cluster for directory-shaped data; most are ruled out many at a time
         m, cl = self.m, self.cl
         orphans: list[tuple[int, list[Entry]]] = []
-        for c in range(2, self.max_cluster + 1):
-            if progress and c % 4096 == 0:
-                progress(c, self.max_cluster)
-            if c in seen_clusters:
-                continue
-            o = self.data_off + (c - 2) * cl
-            a = m[o + 11]
-            if a & 0xC0 and a & 0x3F != 0x0F:   # cheap reject on the first slot's attribute byte
-                continue
-            if m[o] == 0:
-                continue
-            buf = m[o:o + cl]
-            ents, used, bad = self.parse_dir(buf, c)
-            real = [e for e in ents if e.short not in (".", "..")]
-            dotted = buf[0:11] == b".          " and buf[32:43] == b"..         "
-            if bad or not ents:
-                continue
-            if not dotted and not self._plausible(real, used):
-                continue
-            orphans.append((c, ents))
+        step = max(1, (32 << 20) // cl)
+        for c0 in range(2, self.max_cluster + 1, step):
+            n = min(step, self.max_cluster + 1 - c0)
+            if progress:
+                progress(c0, self.max_cluster)
+            a = np.frombuffer(m, np.uint8, n * cl, self.data_off + (c0 - 2) * cl).reshape(n, cl)
+            keep = (a[:, 0] != 0) & _slot_ok(a[:, :32])
+            if cl >= 64:
+                keep &= (a[:, 32] == 0) | _slot_ok(a[:, 32:64])
+            for c in (np.flatnonzero(keep) + c0).tolist():
+                if c in seen_clusters:
+                    continue
+                o = self.data_off + (c - 2) * cl
+                buf = m[o:o + cl]
+                ents, used, bad = self.parse_dir(buf, c)
+                real = [e for e in ents if e.short not in (".", "..")]
+                dotted = buf[0:11] == b".          " and buf[32:43] == b"..         "
+                if bad or not ents:
+                    continue
+                if not dotted and not self._plausible(real, used):
+                    continue
+                orphans.append((c, ents))
         for c, ents in orphans:
             for e in ents:
                 if e.is_dir and e.short not in (".", ".."):

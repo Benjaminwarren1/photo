@@ -28,9 +28,12 @@
 #define E_RST 5          /* restart marker missing or out of order */
 #define E_DCRANGE 6      /* DC value outside what 8-bit samples can produce */
 
+#define FAST_BITS 9
+
 typedef struct {
     int32_t mincode[17], maxcode[18], valptr[17];
     uint8_t vals[256];
+    uint16_t fast[1 << FAST_BITS];   /* (length << 8) | symbol for codes up to FAST_BITS long; 0 = look further */
     int present;
 } HT;
 
@@ -50,13 +53,25 @@ typedef struct {
 } Reader;
 
 static void build_table(HT *t, const uint8_t *raw) {
-    int code = 0, k = 0, l;
+    int code = 0, k = 0, l, i;
     t->present = 0;
+    memset(t->fast, 0, sizeof(t->fast));
     for (l = 1; l <= 16; l++) {
         int n = raw[l - 1];
+        if (k + n > 256) n = 256 - k;        /* a damaged table cannot name more than 256 symbols */
         t->valptr[l] = k;
         t->mincode[l] = code;
         if (n) t->present = 1;
+        if (l <= FAST_BITS) {
+            for (i = 0; i < n; i++) {
+                int c = code + i, j, span = 1 << (FAST_BITS - l);
+                if (c >> l) break;           /* does not fit in l bits: can never be matched */
+                for (j = 0; j < span; j++) {
+                    uint16_t *e = &t->fast[(c << (FAST_BITS - l)) + j];
+                    if (!*e) *e = (uint16_t)((l << 8) | raw[16 + k + i]);   /* the shortest match wins */
+                }
+            }
+        }
         code += n;
         k += n;
         t->maxcode[l] = n ? code - 1 : -1;
@@ -66,48 +81,96 @@ static void build_table(HT *t, const uint8_t *raw) {
     memcpy(t->vals, raw + 16, 256);
 }
 
-/* Returns 0/1, or -1 with r->eod or r->marker set. */
-static inline int get_bit(Reader *r) {
-    if (r->s.left == 0) {
-        int64_t p = r->s.pos;
-        int b;
-        if (p >= r->end) { r->eod = 1; return -1; }
-        b = r->d[p];
-        if (b == 0xFF) {
-            int n;
-            if (p + 1 >= r->end) { r->eod = 1; return -1; }
-            n = r->d[p + 1];
-            if (n != 0) { r->marker = n; return -1; }
-            r->s.pos = p + 2;
+/* Bits are taken from a 64-bit window that is refilled a byte at a time (dropping the zero
+ * that follows every FF in JPEG data). The window only ever holds bytes that the one-bit-
+ * at-a-time rule would also have accepted, so running out means exactly what it meant there:
+ * the data ended, or a marker is next. */
+typedef struct {
+    uint64_t acc;        /* the low nbits bits are unread */
+    int nbits;
+    int64_t pos;         /* next byte to take into the window */
+    int stop;            /* 0, or why no more can be taken: 1 = end of data, 2 = a marker */
+    int64_t pos0;        /* where this window started reading */
+    int32_t cur0;        /* the partly-read byte it started with */
+} Bits;
+
+static inline void bits_init(Bits *b, const State *s) {
+    b->nbits = s->left;
+    b->acc = s->left ? (uint64_t)(s->cur & ((1 << s->left) - 1)) : 0;
+    b->pos = b->pos0 = s->pos;
+    b->cur0 = s->cur;
+    b->stop = 0;
+}
+
+static inline void bits_fill(Bits *b, const uint8_t *d, int64_t end) {
+    while (b->nbits <= 32 && !b->stop && b->pos + 4 <= end) {     /* four plain bytes at once */
+        const uint8_t *q = d + b->pos;
+        if (q[0] == 0xFF || q[1] == 0xFF || q[2] == 0xFF || q[3] == 0xFF) break;
+        b->acc = (b->acc << 32) | ((uint64_t)q[0] << 24 | (uint64_t)q[1] << 16 | (uint64_t)q[2] << 8 | (uint64_t)q[3]);
+        b->nbits += 32;
+        b->pos += 4;
+    }
+    while (b->nbits <= 56 && !b->stop) {
+        int64_t p = b->pos;
+        int v;
+        if (p >= end) { b->stop = 1; break; }
+        v = d[p];
+        if (v == 0xFF) {
+            if (p + 1 >= end) { b->stop = 1; break; }
+            if (d[p + 1] != 0) { b->stop = 2; break; }
+            b->pos = p + 2;
         } else {
-            r->s.pos = p + 1;
+            b->pos = p + 1;
         }
-        r->s.cur = b;
-        r->s.left = 8;
+        b->acc = (b->acc << 8) | (uint64_t)v;
+        b->nbits += 8;
     }
-    r->s.left--;
-    return (r->s.cur >> r->s.left) & 1;
 }
 
-static inline int get_bits(Reader *r, int n) {
-    int v = 0;
-    while (n-- > 0) {
-        int b = get_bit(r);
-        if (b < 0) return -1;
-        v = (v << 1) | b;
+/* Write the window's position back as (pos, cur, left): whole unread bytes are handed back. */
+static void bits_to_state(const Bits *b, State *s, const uint8_t *d) {
+    int k = b->nbits >> 3;
+    int64_t p = b->pos;
+    while (k-- > 0) {
+        if (p - 2 >= b->pos0 && d[p - 1] == 0 && d[p - 2] == 0xFF) p -= 2; else p -= 1;
     }
-    return v;
+    s->pos = p;
+    s->left = b->nbits & 7;
+    if (p == b->pos0) s->cur = b->cur0;
+    else if (p - 2 >= b->pos0 && d[p - 1] == 0 && d[p - 2] == 0xFF) s->cur = 0xFF;
+    else s->cur = d[p - 1];
 }
 
-/* Returns the symbol, -1 on eod/marker, -2 on an invalid code. */
-static inline int huff(Reader *r, const HT *t) {
-    int code = 0, l;
+static inline int take_bits(Bits *b, const uint8_t *d, int64_t end, int n) {
+    if (b->nbits < n) {
+        bits_fill(b, d, end);
+        if (b->nbits < n) return -1;
+    }
+    b->nbits -= n;
+    return (int)((b->acc >> b->nbits) & ((1u << n) - 1));
+}
+
+/* Returns the symbol, -1 if the data ends or a marker comes first, -2 on an invalid code. */
+static inline int take_symbol(Bits *b, const uint8_t *d, int64_t end, const HT *t) {
+    int nb, code, l;
+    unsigned e;
+    if (b->nbits < 16) bits_fill(b, d, end);
+    nb = b->nbits;
+    e = t->fast[nb >= FAST_BITS ? (unsigned)(b->acc >> (nb - FAST_BITS)) & ((1u << FAST_BITS) - 1)
+                                : (unsigned)(b->acc << (FAST_BITS - nb)) & ((1u << FAST_BITS) - 1)];
+    if (e) {
+        l = (int)(e >> 8);
+        if (l > nb) return -1;
+        b->nbits = nb - l;
+        return (int)(e & 255);
+    }
     for (l = 1; l <= 16; l++) {
-        int b = get_bit(r);
-        if (b < 0) return -1;
-        code = (code << 1) | b;
-        if (t->maxcode[l] >= 0 && code <= t->maxcode[l] && code >= t->mincode[l])
+        if (l > nb) return -1;
+        code = (int)((b->acc >> (nb - l)) & ((1u << l) - 1));
+        if (t->maxcode[l] >= 0 && code <= t->maxcode[l] && code >= t->mincode[l]) {
+            b->nbits = nb - l;
             return t->vals[t->valptr[l] + code - t->mincode[l]];
+        }
     }
     return -2;
 }
@@ -159,43 +222,50 @@ static int64_t mcu_cap(const Reader *r, const Spec *S, long long max_mcus) {
 static int64_t run(Reader *r, const Spec *S, int16_t *out, int64_t todo, int *status_out, int *err_out) {
     int status = ST_NEED_DATA, err = E_NONE;
     int64_t done = 0;
-    State good = r->s;
     const int restart = S->restart;
+    const uint8_t *d = r->d;
+    const int64_t end = r->end;
+    State st = r->s, good_st;
+    Bits b, good_b;
+    bits_init(&b, &st);
     while (1) {
-        good = r->s;
-        if (r->s.mcu >= S->total) { status = ST_DONE; break; }
+        good_b = b; good_st = st;
+        if (st.mcu >= S->total) { status = ST_DONE; break; }
         if (done >= todo) { status = ST_NEED_DATA; break; }
-        if (restart > 0 && r->s.to_restart == 0) {
+        if (restart > 0 && st.to_restart == 0) {
             /* a restart marker is due: drop padding bits, then expect FF Dn */
-            int64_t p = r->s.pos;
-            while (p + 1 < r->end && r->d[p] == 0xFF && r->d[p + 1] == 0xFF) p++;
-            if (p + 1 >= r->end) { status = ST_NEED_DATA; break; }
-            if (r->d[p] != 0xFF || r->d[p + 1] != (0xD0 | r->s.next_rst)) { status = ST_ERROR; err = E_RST; break; }
-            r->s.pos = p + 2;
-            r->s.left = 0;
-            r->s.pred[0] = r->s.pred[1] = r->s.pred[2] = r->s.pred[3] = 0;
-            r->s.next_rst = (r->s.next_rst + 1) & 7;
-            r->s.to_restart = restart;
+            int64_t p;
+            bits_to_state(&b, &st, d);
+            p = st.pos;
+            while (p + 1 < end && d[p] == 0xFF && d[p + 1] == 0xFF) p++;
+            if (p + 1 >= end) { status = ST_NEED_DATA; break; }
+            if (d[p] != 0xFF || d[p + 1] != (0xD0 | st.next_rst)) { status = ST_ERROR; err = E_RST; break; }
+            st.pos = p + 2;
+            st.left = 0;
+            st.pred[0] = st.pred[1] = st.pred[2] = st.pred[3] = 0;
+            st.next_rst = (st.next_rst + 1) & 7;
+            st.to_restart = restart;
+            bits_init(&b, &st);
         }
         int16_t *o = out + done * S->blocks_per_mcu;
         int ci, bi, fail = 0;
         for (ci = 0; ci < S->ncomp && !fail; ci++) {
             const HT *dt = &S->tabs[S->dctab[ci]], *at = &S->tabs[4 + S->actab[ci]];
             for (bi = 0; bi < S->nblocks[ci]; bi++) {
-                int s = huff(r, dt), k;
+                int s = take_symbol(&b, d, end, dt), k;
                 if (s < 0) { if (s == -2) err = E_HUFF; fail = 1; break; }
                 if (s > 11) { err = E_SIZE; fail = 1; break; }
                 if (s) {
-                    int v = get_bits(r, s);
+                    int v = take_bits(&b, d, end, s);
                     if (v < 0) { fail = 1; break; }
                     if (v < (1 << (s - 1))) v -= (1 << s) - 1;
-                    r->s.pred[ci] += v;
+                    st.pred[ci] += v;
                 }
-                if (r->s.pred[ci] > S->dcbound[ci] || r->s.pred[ci] < -S->dcbound[ci]) { err = E_DCRANGE; fail = 1; break; }
-                *o++ = (int16_t)r->s.pred[ci];
+                if (st.pred[ci] > S->dcbound[ci] || st.pred[ci] < -S->dcbound[ci]) { err = E_DCRANGE; fail = 1; break; }
+                *o++ = (int16_t)st.pred[ci];
                 k = 1;
                 while (k < 64) {
-                    int rs = huff(r, at), rn, sz;
+                    int rs = take_symbol(&b, d, end, at), rn, sz;
                     if (rs < 0) { if (rs == -2) err = E_HUFF; fail = 1; break; }
                     rn = rs >> 4; sz = rs & 15;
                     if (sz == 0) {
@@ -207,22 +277,23 @@ static int64_t run(Reader *r, const Spec *S, int16_t *out, int64_t todo, int *st
                     k += rn;
                     if (k > 63) { err = E_OVERRUN; fail = 1; break; }
                     if (sz > 10) { err = E_SIZE; fail = 1; break; }
-                    if (get_bits(r, sz) < 0) { fail = 1; break; }
+                    if (take_bits(&b, d, end, sz) < 0) { fail = 1; break; }
                     k++;
                 }
                 if (fail) break;
             }
         }
         if (fail) {
-            if (err == E_NONE && r->marker) err = E_MARKER;
+            if (err == E_NONE && b.stop == 2) err = E_MARKER;
             status = err != E_NONE ? ST_ERROR : ST_NEED_DATA;   /* plain end of data: roll back */
             break;
         }
-        r->s.mcu++;
-        if (restart > 0) r->s.to_restart--;
+        st.mcu++;
+        if (restart > 0) st.to_restart--;
         done++;
     }
-    r->s = good;
+    bits_to_state(&good_b, &good_st, d);
+    r->s = good_st;
     *status_out = status;
     *err_out = err;
     return done;

@@ -314,3 +314,32 @@ def test_photo_saved_twice_is_not_a_close_call(tmp_path):
     assert len(twins) == 2 and all(it.grade == "Verified" for it in twins), [(it.name, it.grade, it.note) for it in twins]
     for it in twins:
         assert (tmp_path / "out" / it.saved_as).read_bytes() == twin
+
+
+@pytest.mark.parametrize("folders_survive", [True, False])
+def test_drive_with_a_format_the_tool_cannot_read_is_searched_anyway(tmp_path, folders_survive):
+    """A drive reformatted as NTFS (or with a damaged start) has no folders this tool can
+    read. It must still find the photos, and still deliver nothing wrong."""
+    old = used_card(fat_type=16, cluster_size=16384, size_mb=128, base_cluster=40, folder_at_base=True)
+    img_bytes = bytearray(old.tobytes())
+    front = old.data_off if folders_survive else old.cluster_off(40) + 16 * old.cl
+    img_bytes[:front] = bytes(front)
+    img_bytes[0:11] = b"\xebR\x90NTFS    "
+    img_bytes[510:512] = b"\x55\xaa"
+    img = tmp_path / "card.img"
+    img.write_bytes(img_bytes)
+    rec = Recovery(img, tmp_path / "out")
+    rec.run()
+    assert "NTFS" in rec.summary["unreadable"]
+    assert rec.summary["cluster_size"] == 16384
+    assert "searched for photos" in (tmp_path / "out" / "report.html").read_text()
+    good = {t.sha256 for t in old.history}
+    files = [p for p in (tmp_path / "out" / FOLDER_OK).rglob("*") if p.is_file()]
+    wrong = [p for p in files if hashlib.sha256(p.read_bytes()).hexdigest() not in good]
+    assert not wrong, f"delivered files that are not on the card: {wrong[:3]}"
+    got = {hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+    intact = [t for t in old.history if not t.overwritten and old.cluster_off(min(t.clusters)) >= front]
+    found = sum(t.sha256 in got for t in intact)
+    assert found >= 0.9 * len(intact) and found >= 10, f"{found} of {len(intact)}"
+    if folders_survive:
+        assert any(p.name.startswith("IMG_") for p in files), "names from the old folders were not used"

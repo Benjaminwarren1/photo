@@ -35,6 +35,10 @@ def write_html(path: Path, summary: dict, rows: list[dict]) -> None:
            ("<p>This card had been reformatted with different settings. The files below were read using the "
             f"layout the card had before ({summary['old_layout']['cluster_size'] // 1024 or 1} KB blocks), "
             "worked out from what is still on it.</p>") if summary.get("old_layout") else "",
+           (f"<p>This drive has {e(summary['unreadable'])}, so its folders could not be read. The drive itself was "
+            "searched for photos instead. That finds photos whether or not they were deleted, so some of what is "
+            "below may still be on the drive in the normal way, and original file names are not known.</p>")
+           if summary.get("unreadable") else "",
            "<table class=sum><tr><th>Result</th><th>Files</th><th>What it means</th></tr>"]
     for g in ORDER:
         if counts.get(g):
@@ -48,4 +52,8 @@ def write_html(path: Path, summary: dict, rows: list[dict]) -> None:
         out.append(f"<tr><td>{e(r['name'])}{where}</td><td class=g{ORDER.index(r['grade'])}>{e(grade)}</td>"
                    f"<td>{e(r['method'])}</td><td>{e(r['note'])}</td></tr>")
     out.append("</table>")
+    if summary.get("steps"):
+        out.append("<details><summary>Where the time went</summary><table><tr><th>Step</th><th>Seconds</th></tr>")
+        out += [f"<tr><td>{e(str(m))}</td><td>{t}</td></tr>" for m, t in summary["steps"]]
+        out.append("</table></details>")
     path.write_text("\n".join(out), encoding="utf-8")

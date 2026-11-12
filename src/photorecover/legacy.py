@@ -79,20 +79,19 @@ MAGIC = dict(jpg=(0, b"\xff\xd8\xff"), png=(0, b"\x89PNG"), mp4=(4, b"ftyp"), zi
 
 
 def _signature_maps(m) -> dict[str, np.ndarray]:
-    """For each kind of file, which 512-byte sectors begin the way that kind begins."""
+    """For each kind of file, the 512-byte sectors (in order) that begin the way that kind begins."""
     n = len(m) // SECTOR
-    head = np.empty((n, 8), np.uint8)
     step = (64 << 20) // SECTOR
+    found = {kind: [] for kind in MAGIC}
     for s0 in range(0, n, step):
         k = min(step, n - s0)
-        head[s0:s0 + k] = np.frombuffer(m, np.uint8, k * SECTOR, s0 * SECTOR).reshape(k, SECTOR)[:, :8]
-    out = {}
-    for kind, (o, magic) in MAGIC.items():
-        ok = np.ones(n, bool)
-        for i, v in enumerate(magic):
-            ok &= head[:, o + i] == v
-        out[kind] = ok
-    return out
+        head = np.frombuffer(m, np.uint8, k * SECTOR, s0 * SECTOR).reshape(k, SECTOR)[:, :8]
+        for kind, (o, magic) in MAGIC.items():
+            ok = head[:, o] == magic[0]
+            for i in range(1, len(magic)):
+                ok &= head[:, o + i] == magic[i]
+            found[kind].append(np.flatnonzero(ok) + s0)
+    return {kind: np.concatenate(v) if v else np.zeros(0, np.int64) for kind, v in found.items()}
 
 
 def _kind(e: Entry) -> str | None:
@@ -116,9 +115,9 @@ def _votes(entries: list[Entry], sigs: dict[str, np.ndarray], total_sectors: int
         spc = cs // SECTOR
         for n, k in want:
             s = (n - 2) * spc
-            seg = sigs[k][s:s + span]
-            if len(seg):
-                acc[:len(seg)] += seg
+            p = sigs[k]
+            i, j = np.searchsorted(p, (s, s + span))
+            acc[p[i:j] - s] += 1
         best = int(acc.argmax())
         out[(cs, best * SECTOR)] = int(acc[best])
     return len(want), out
@@ -154,27 +153,73 @@ def find_old_layout(vol: FatVolume, entries: list[Entry], log=None):
         return None
     if log:
         log("The card's folders do not match its current format; working out how it was laid out before")
+    return _infer(m, vol, ok_now, log)
+
+
+def _infer(m, vol: FatVolume | None, ok_now: int = 0, log=None):
+    """Work out an earlier layout from the folders and photo starts found on the card."""
+    total = len(m) // SECTOR
     sigs = _signature_maps(m)
     old_entries = _Sectors(m).scan_entries()
     testable, votes = _votes(old_entries, sigs, total)
     if testable:
         (cs, off), best = max(votes.items(), key=lambda kv: kv[1])
-        if best >= max(4, 0.15 * testable) and best > 2 * ok_now and (cs, off) != (vol.cl, vol.data_off):
+        if best >= max(4, 0.15 * testable) and best > 2 * ok_now and (vol is None or (cs, off) != (vol.cl, vol.data_off)):
             if log:
                 log(f"Found the old layout: {cs // 1024 or cs} {'KB' if cs >= 1024 else 'byte'} blocks; "
                     f"{best} of {testable} listed files start exactly where it says")
             return LegacyFatVolume(m, cs, off, vol)
     # no folder entries to go on: fall back on where photos start
-    pos = np.flatnonzero(sigs["jpg"]).astype(np.int64) * SECTOR
-    if len(pos) >= 8 and ((pos - vol.data_off) % vol.cl == 0).mean() < 0.5:
+    pos = sigs["jpg"].astype(np.int64) * SECTOR
+    if len(pos) >= 8 and (vol is None or ((pos - vol.data_off) % vol.cl == 0).mean() < 0.5):
         for cs in reversed(CLUSTER_SIZES):
             res, counts = np.unique(pos % cs, return_counts=True)
             if counts.max() >= 0.9 * len(pos):
                 off = int(res[counts.argmax()])
                 if log:
-                    log("No old folders survive, but photos on the card line up with an older layout")
+                    log("No old folders survive, but photos on the card line up with an older layout" if vol is not None
+                        else f"Photos on this drive start every {cs // 1024 or cs} {'KB' if cs >= 1024 else 'bytes'}; using that to find them")
                 return LegacyFatVolume(m, cs, off, vol)
     return None
+
+
+class UnreadableVolume(LegacyFatVolume):
+    """A drive with no file system this tool reads (NTFS, a Mac or Linux format, or a damaged
+    one). Nothing is known about which files are deleted, so every photo found is recovered,
+    including ones that are still on the drive in the normal way."""
+    what = "a format this tool cannot read"
+
+    @property
+    def kind(self) -> str:
+        return "Unreadable format, searched directly;"
+
+
+def _format_name(m) -> str:
+    from .fat import find_partitions
+    for off in [0] + [o for o in find_partitions(m) if o]:
+        b = bytes(m[off:off + 1100])
+        if b[3:11] == b"NTFS    ":
+            return "NTFS (the usual Windows format)"
+        if b[1024:1026] in (b"H+", b"HX"):
+            return "a Mac format"
+        if len(b) >= 1082 and b[1080:1082] == b"\x53\xef":
+            return "a Linux format"
+        if b[32:36] == b"NXSB":
+            return "a Mac format"
+    return "no format this tool recognises"
+
+
+def open_unreadable(m, log=None) -> UnreadableVolume:
+    """A volume for a drive whose own format cannot be read, laid out the way an earlier FAT
+    format had it if signs of one survive, or else on the grid its photos start on."""
+    what = _format_name(m)
+    if log:
+        log(f"This drive has {what}. Its folders cannot be read, so the drive itself is searched for photos")
+    found = _infer(m, None, 0, log)
+    cs, off = (found.cl, found.data_off) if found is not None else (4096, 0)
+    v = UnreadableVolume(m, cs, off)
+    v.what = what
+    return v
 
 
 def _looks_reformatted(vol: FatVolume) -> bool:

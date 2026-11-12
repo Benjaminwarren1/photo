@@ -308,6 +308,7 @@ class Stream:
         self.status = ST_NEED_DATA
         self.error = 0
         self.consumed = 0                # scan bytes consumed so far (relative to data_off)
+        self._memo = None
 
     def _run(self, data: bytes):
         buf = self.carry + data
@@ -317,11 +318,14 @@ class Stream:
 
     def probe(self, data: bytes):
         """Returns (status, new_mcus, dc_block_values, error) without committing."""
-        _, status, n, dc, _, err = self._run(data)
+        res = self._run(data)
+        self._memo = (data, res)         # most probes are followed by feeding the very same bytes
+        _, status, n, dc, _, err = res
         return status, n, np.frombuffer(dc, np.int16).reshape(n, self.info.blocks_per_mcu), err
 
     def feed(self, data: bytes):
-        buf, status, n, dc, new_state, err = self._run(data)
+        memo, self._memo = self._memo, None
+        buf, status, n, dc, new_state, err = memo[1] if memo is not None and memo[0] == data else self._run(data)
         if n:
             self.dc[self.mcus:self.mcus + n] = np.frombuffer(dc, np.int16).reshape(n, self.info.blocks_per_mcu)
         self.mcus += n
@@ -379,6 +383,7 @@ class Stream:
         s.info, s.state, s.carry = self.info, self.state, self.carry
         s.dc = self.dc.copy()
         s.mcus, s.status, s.error, s.consumed = self.mcus, self.status, self.error, self.consumed
+        s._memo = None
         return s
 
 

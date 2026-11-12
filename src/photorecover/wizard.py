@@ -154,7 +154,7 @@ class Session:
                 self.rec = rec
                 self.step = "done"
             except NotFat as e:
-                self.step, self.message = "error", f"This card's format is not supported yet: {e}"
+                self.step, self.message = "error", f"This card image is too small or too damaged to search: {e}"
             except Exception as e:  # noqa: BLE001 - shown to the user rather than lost
                 self.step, self.message = "error", f"Something went wrong while recovering: {type(e).__name__}: {e}"
 

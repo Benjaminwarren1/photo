@@ -280,10 +280,10 @@ class Rebuilder:
         def lim_of(w: _Work) -> float:
             return limit(w.scores, 8.0) if has_preview else limit(w.seams, 6.0)
 
-        def commit(w: _Work, c: int | None, data: bytes):
+        def commit(w: _Work, c: int | None, data: bytes, scored=None):
             m0 = w.stream.mcus
             _, n = w.stream.feed(data)
-            ps, ss = assess(w, w.stream.dc[m0:m0 + n], m0)
+            ps, ss = scored if scored is not None else assess(w, w.stream.dc[m0:m0 + n], m0)
             if ps is not None:
                 w.scores.append(ps)
             if ss is not None:
@@ -333,7 +333,7 @@ class Rebuilder:
                         ps, ss = assess(w, dcv, m0)
                         sc = ps if has_preview else ss
                         if sc is None or sc <= lim_of(w):
-                            commit(w, nx, vol.cluster(nx))
+                            commit(w, nx, vol.cluster(nx), (ps, ss))
                             continue
                 if contiguous_only:
                     w.status, w.reason = "partial", "not in one piece"

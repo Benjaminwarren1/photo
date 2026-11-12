@@ -4,8 +4,9 @@ A free tool for rescuing deleted photos from memory cards. It avoids the "grey b
 tools leave when a photo was stored on the card in more than one piece.
 
 **Status: early development, not yet tried on many real cards.** It reads FAT16, FAT32 and exFAT cards, rebuilds
-fragmented JPEG photos and MP4/MOV/3GP videos, and has a step-by-step wizard. Still to come: a screen for
-deciding close calls by eye, and optional AI help.
+fragmented JPEG photos and MP4/MOV/3GP videos, and has a step-by-step wizard. A card that was reformatted is
+read the way it was laid out before, and a drive in a format it cannot read (NTFS, Mac, Linux, or damaged)
+is searched directly for photos. Still to come: optional AI help.
 
 ## Why it is different
 

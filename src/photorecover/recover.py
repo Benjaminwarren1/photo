@@ -6,10 +6,13 @@ The image is only ever read. Output goes to a separate folder.
 from __future__ import annotations
 
 import io
+import itertools
 import json
 import os
 import struct
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,7 +20,7 @@ import numpy as np
 from PIL import Image
 
 from . import __version__, jpeg
-from .fat import Entry, open_volume
+from .fat import Entry, NotFat, open_volume
 from .rebuild import Judge, Rebuilder, Result
 from .video import CONTAINERS, VideoRebuilder
 
@@ -211,9 +214,32 @@ def pixel_audit(data: bytes, info) -> bool | None:
     return not scores or max(scores) <= max(10.0, 3.0 * float(np.median(scores)))
 
 
+def _workers() -> int:
+    return min(8, os.cpu_count() or 1) if jpeg.HAVE_C else 1
+
+
+def _ahead(jobs, fn, workers: int):
+    """Yields (job, fn(job)) in order, with fn running on other processor cores a little
+    ahead of whoever is reading. fn must only look, never change anything: its answer
+    is based on the card as it was a moment ago, and the reader checks it still holds."""
+    if workers < 2 or len(jobs) < 4 * workers:
+        for j in jobs:
+            yield j, fn(j)
+        return
+    with ThreadPoolExecutor(workers) as pool:
+        queue: deque = deque()
+        it_jobs = iter(jobs)
+        for j in itertools.islice(it_jobs, 4 * workers):
+            queue.append((j, pool.submit(fn, j)))
+        while queue:
+            j, f = queue.popleft()
+            yield j, f.result()
+            for nj in itertools.islice(it_jobs, 1):
+                queue.append((nj, pool.submit(fn, nj)))
+
+
 class Recovery:
     def __init__(self, image, out_dir=None, log=None):
-        self.vol = open_volume(image)
         self.out = Path(out_dir) if out_dir else None
         say = log or (lambda msg: None)
 
@@ -224,6 +250,17 @@ class Recovery:
             self.steps.append([msg, time.time()])
             say(msg)
         self.log = _log
+        try:
+            self.vol = open_volume(image)
+            self.unreadable = ""
+        except NotFat:
+            from .fat import _open_ro
+            from .legacy import open_unreadable
+            m = _open_ro(image) if isinstance(image, (str, Path)) else image
+            if len(m) < (1 << 20):
+                raise
+            self.vol = open_unreadable(m, self.log)
+            self.unreadable = self.vol.what
         self.items: list[Item] = []
         self.summary: dict = {}
         self.problems: list[str] = []
@@ -256,6 +293,17 @@ class Recovery:
         hits = [c for hi in range((vol.max_cluster >> 16) + 1) if fits(c := lo | (hi << 16))]
         return hits[0] if len(hits) == 1 else e.start
 
+    def _photo_starts(self, avail: np.ndarray) -> list[int]:
+        """Unclaimed clusters that begin the way a JPEG begins."""
+        vol, out = self.vol, []
+        step = max(1, (64 << 20) // vol.cl)
+        for c0 in range(2, vol.max_cluster + 1, step):
+            n = min(step, vol.max_cluster + 1 - c0)
+            a = np.frombuffer(vol.m, np.uint8, n * vol.cl, vol.data_off + (c0 - 2) * vol.cl).reshape(n, vol.cl)
+            hit = (a[:, 0] == 0xFF) & (a[:, 1] == 0xD8) & (a[:, 2] == 0xFF) & avail[c0:c0 + n]
+            out += (np.flatnonzero(hit) + c0).tolist()
+        return out
+
     def run(self) -> dict:
         t0 = time.time()
         vol = self.vol
@@ -264,7 +312,7 @@ class Recovery:
         self.old_layout = None
         try:
             from .legacy import find_old_layout
-            old = find_old_layout(vol, entries, self.log)
+            old = None if self.unreadable else find_old_layout(vol, entries, self.log)
         except Exception as e:  # noqa: BLE001
             old = None
             self.problems.append(f"looking for an older layout: {type(e).__name__}: {e}")
@@ -297,6 +345,12 @@ class Recovery:
                     it.note = "the tool hit an unexpected problem with this file and skipped it"
                 return None
 
+        def ahead(jobs, fn):
+            return _ahead(jobs, fn, _workers())
+
+        def still_free(r) -> bool:
+            return bool(avail[np.asarray(r.chain, np.int64)].all())
+
         # one item per distinct (start, size); a long name wins over a short one
         seen: dict[tuple[int, int], Item] = {}
         for e in targets:
@@ -317,17 +371,23 @@ class Recovery:
         self.log(f"Checking {len(jpegs)} photos")
         pending: list[Item] = []
         loose: list[tuple[Item, Result]] = []
-        for k, it in enumerate(jpegs):
+        def whole(it):
+            r = attempt(it, rb.prove_chain, it._hint, it.size) if it._hint else None
+            if r is not None:
+                return True, r
+            return False, attempt(it, rb.rebuild, it.start, it.size, contiguous_only=True)
+
+        for k, (it, (proved, r)) in enumerate(ahead(jpegs, whole)):
             self.progress = (k, len(jpegs))
             hint = it._hint
-            r = attempt(it, rb.prove_chain, hint, it.size) if hint else None
-            if r is not None:
+            if r is not None and r.status == "complete" and not still_free(r):
+                proved, r = whole(it)       # an earlier photo has just taken some of this space: look again
+            if proved:
                 pieces = 1 + sum(1 for a, b in zip(hint, hint[1:]) if b != a + 1)
                 self._accept(it, r, "found whole" if pieces == 1 else
                              f"rebuilt from {pieces} pieces using the card's own record")
                 claim(r.chain)
                 continue
-            r = attempt(it, rb.rebuild, it.start, it.size, contiguous_only=True)
             if r is None:
                 continue
             if r.status == "complete" and r.exact_end:
@@ -448,32 +508,52 @@ class Recovery:
                 it.note = "its space was reused by a later file"
 
         # Pass 3: photos with no folder entry left at all.
-        heads = [int(c) for c in np.flatnonzero(avail) if vol.cluster(int(c))[:3] == b"\xff\xd8\xff"]
+        heads = self._photo_starts(avail)
         if heads:
             self.log(f"Looking at {len(heads)} photo starts that have no folder entry")
         found: list[Item] = []
 
+        def take(c: int, r) -> None:
+            it = Item(name="", folder="Found by scanning", size=r.size, start=c,
+                      kind="jpeg", source="found by scanning")
+            pieces = 1 + sum(1 for a, b in zip(r.chain, r.chain[1:]) if b != a + 1)
+            self._accept(it, r, "found whole" if pieces == 1 else f"rebuilt from {pieces} pieces")
+            claim(r.chain)
+            found.append(it)
+
         def carve(c: int, wide: bool):
-            # Where a listed photo could not be finished, its folder entry may be out of date and a
-            # different, whole photo may start there: worth a look, but not another search of the card.
-            r = attempt(None, rb.rebuild, c, None, contiguous_only=c in tried, wide=wide)
+            r = attempt(None, rb.rebuild, c, None, wide=wide)
             if r is not None and r.status == "complete":
-                it = Item(name="", folder="Found by scanning", size=r.size, start=c,
-                          kind="jpeg", source="found by scanning")
-                pieces = 1 + sum(1 for a, b in zip(r.chain, r.chain[1:]) if b != a + 1)
-                self._accept(it, r, "found whole" if pieces == 1 else f"rebuilt from {pieces} pieces")
-                claim(r.chain)
-                found.append(it)
+                take(c, r)
             return r
 
-        again: list[int] = []
-        for k, c in enumerate(heads):
+        # First the ones still in one piece, which is most of them and needs no searching.
+        def in_one_piece(c: int):
+            return attempt(None, rb.rebuild, c, None, contiguous_only=True) if avail[c] else None
+
+        broken: list[int] = []
+        for k, (c, r) in enumerate(ahead(heads, in_one_piece)):
             self.progress = (k, len(heads))
+            if not avail[c]:
+                continue
+            if r is not None and r.status == "complete" and not still_free(r):
+                r = in_one_piece(c)
+            if r is not None and r.status == "complete":
+                take(c, r)
+            # Where a listed photo could not be finished, its folder entry may be out of date and a
+            # different, whole photo may start there: worth that look, but not another search.
+            elif c not in tried and r is not None and r.status not in ("failed", "unsupported"):
+                broken.append(c)
+        if broken:
+            self.log(f"Rebuilding {len(broken)} of them that are stored in pieces")
+        again: list[int] = []
+        for k, c in enumerate(broken):
+            self.progress = (k, len(broken))
             if avail[c]:
                 r = carve(c, False)
                 # One that joined a piece by searching nearby, then got stuck, has shown that its
                 # pieces are on the card: it has earned a search of all of it.
-                if r is not None and r.status != "complete" and r.picks and c not in tried:
+                if r is not None and r.status != "complete" and r.picks:
                     again.append(c)
         if again:
             self.log(f"Searching the whole card for the rest of {len(again)} of them")
@@ -481,13 +561,16 @@ class Recovery:
             self.progress = (k, len(again))
             if avail[c]:
                 carve(c, True)
+        stale: dict[int, list[Item]] = {}
+        for old in items:
+            if old.kind == "jpeg" and old.grade in (GRADE_REVIEW, GRADE_PARTIAL):
+                stale.setdefault(old.start, []).append(old)
         for n, it in enumerate(sorted(found, key=lambda i: i.start), 1):
             it.name = f"found_{n:05d}.jpg"
             items.append(it)
-            for old in items:      # the listed photo that began here is this one's stale folder entry
-                if old is not it and old.kind == "jpeg" and old.start == it.start and old.grade in (GRADE_REVIEW, GRADE_PARTIAL):
-                    old.grade, old.chain, old.candidates, old.percent = GRADE_LOST, [], [], 0.0
-                    old.note = f"its space now holds a different, complete photo (saved as {it.name})"
+            for old in stale.get(it.start, ()):      # the listed photo that began here is this one's stale folder entry
+                old.grade, old.chain, old.candidates, old.percent = GRADE_LOST, [], [], 0.0
+                old.note = f"its space now holds a different, complete photo (saved as {it.name})"
 
         self.items = items
         self._rb, self._avail = rb, avail
@@ -499,7 +582,7 @@ class Recovery:
                             fast_decoder=jpeg.HAVE_C, problems=self.problems[:50],
                             steps=[[m, round((self.steps[i + 1][1] if i + 1 < len(self.steps) else time.time()) - t, 1)]
                                    for i, (m, t) in enumerate(self.steps)],
-                            old_layout=self.old_layout)
+                            old_layout=self.old_layout, unreadable=self.unreadable)
         if self.out:
             self._write_report()
         return self.summary
@@ -629,23 +712,39 @@ class Recovery:
         """The mandatory final audit, then write files. Nothing reaches Recovered
         without passing the audit on the exact bytes being written."""
         self._taken: set[str] = set()
-        for it in self.items:
-            self._deliver_item(it)
+        todo = [it for it in self.items if it.chain]
+        if todo:
+            self.log(f"Checking every recovered file once more and saving {len(todo)} files")
+        for k, (it, verdict) in enumerate(_ahead(todo, self._audit, _workers())):
+            self.progress = (k, len(todo))
+            self._deliver_item(it, verdict)
 
-    def _deliver_item(self, it: Item) -> None:
+    def _data(self, it: Item) -> bytes:
+        vol = self.vol
+        if -1 in it.chain:       # a video with pieces missing: blank where the card has nothing
+            return b"".join(bytes(vol.cl) if c < 0 else bytes(vol.cluster(c)) for c in it.chain)[:it.size]
+        return vol.read_chain(it.chain, it.size if (it.percent == 100.0 or it.kind != "jpeg") else None)
+
+    def _audit(self, it: Item):
+        """The final check of one file's exact bytes: None if it needs none, else (passed, note)."""
+        if not (it.kind == "jpeg" and it.percent == 100.0 and it.grade in (GRADE_VERIFIED, GRADE_NO_PREVIEW)):
+            return None
+        try:
+            ok, note, _ = audit_jpeg(self._data(it))
+        except Exception as e:  # noqa: BLE001
+            ok, note = False, f"the check itself failed ({type(e).__name__})"
+        return ok, note
+
+    def _deliver_item(self, it: Item, verdict="ask") -> None:
         vol, taken = self.vol, self._taken
         if True:
             if not it.chain:
                 return
-            if -1 in it.chain:       # a video with pieces missing: blank where the card has nothing
-                data = b"".join(bytes(vol.cl) if c < 0 else bytes(vol.cluster(c)) for c in it.chain)[:it.size]
-            else:
-                data = vol.read_chain(it.chain, it.size if (it.percent == 100.0 or it.kind != "jpeg") else None)
-            if it.kind == "jpeg" and it.percent == 100.0 and it.grade in (GRADE_VERIFIED, GRADE_NO_PREVIEW):
-                try:
-                    ok, note, _ = audit_jpeg(data)
-                except Exception as e:  # noqa: BLE001
-                    ok, note = False, f"the check itself failed ({type(e).__name__})"
+            data = self._data(it)
+            if verdict == "ask":
+                verdict = self._audit(it)
+            if verdict is not None:
+                ok, note = verdict
                 if not ok:
                     whole = all(b == a + 1 for a, b in zip(it.chain, it.chain[1:]))
                     if whole and "preview" in note:

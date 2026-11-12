@@ -81,3 +81,62 @@ def test_flat_colour_is_not_mistaken_for_photo():
     assert judge.preview_score(flat, m0) == NOT_A_PHOTO
     both = judge.screen_scores(st.dc, np.stack([real, flat]), m0)
     assert both[0] == pytest.approx(judge.preview_score(real, m0), rel=1e-3) and both[1] == NOT_A_PHOTO
+
+
+def test_quick_folder_filter_never_disagrees_with_the_folder_parser():
+    """The sweep for lost folders rules most blocks out in bulk. That shortcut must say
+    exactly what the real parser says about a block's first slot."""
+    import numpy as np
+    from photorecover.fat import FatVolume, _slot_ok
+    rng = np.random.default_rng(3)
+    good = bytearray(b"IMG_0001JPG\x20" + bytes(20))
+    slots = []
+    for i in range(6000):
+        s = bytearray(good) if i % 3 else bytearray(rng.bytes(32))
+        if i % 3 == 1:
+            s[int(rng.integers(0, 12))] = int(rng.integers(0, 256))
+        if i % 3 == 2:
+            s[11] = 0x0F
+            s[12] = int(rng.integers(0, 2)); s[26] = int(rng.integers(0, 2)); s[27] = 0
+        if s[0] == 0:
+            s[0] = 0x41
+        slots.append(bytes(s))
+    vol = FatVolume.__new__(FatVolume)
+    vol.fat_bits = 16
+    want = [vol.parse_dir(s, 0)[2] == 0 for s in slots]
+    got = _slot_ok(np.frombuffer(b"".join(slots), np.uint8).reshape(-1, 32)).tolist()
+    assert got == want
+    assert 500 < sum(want) < 5500
+
+
+@pytest.mark.parametrize("kw", [dict(), dict(restart_interval=2), dict(quality=97)])
+def test_c_matches_python_fed_in_pieces(kw):
+    """The same answer, and the same resume point, however the data is cut up and damaged:
+    markers and runs of FF dropped in, bits flipped, pieces as small as one byte."""
+    data = make_photo(8, 160, 120, **kw)
+    info = jpeg.parse_header(data)
+    scan = data[info.data_off:]
+    st0 = jpeg.STATE.pack(0, 0, 0, 0, 0, 0, 0, 0, info.restart, 0)
+    rnd = random.Random(2)
+    for trial in range(40):
+        d = bytearray(scan)
+        p = rnd.randrange(len(d))
+        if trial % 4 == 1:
+            d[p] ^= 1 << rnd.randrange(8)
+        elif trial % 4 == 2:
+            d[p:p + rnd.randrange(1, 6)] = b"\xff" * 5
+        elif trial % 4 == 3:
+            d[p:p + 2] = bytes([0xFF, rnd.choice([0, 0xD0, 0xD3, 0xD9, 0xC4])])
+        state, buf, pos = st0, b"", 0
+        while True:
+            take = rnd.choice([1, 2, 3, 7, 64, 512, len(d)])
+            buf += bytes(d[pos:pos + take])
+            pos += take
+            mx = rnd.choice([-1, -1, 0, 1, 5])
+            got = _scan.decode(buf, state, info.spec, mx)
+            assert got == _scan_py.decode(buf, state, info.spec, mx)
+            if got[0] != jpeg.ST_NEED_DATA or (pos >= len(d) and mx == -1):
+                break
+            s = list(jpeg.STATE.unpack(got[3]))
+            buf, s[0] = buf[s[0]:], 0
+            state = jpeg.STATE.pack(*s)
