@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import sys
+import textwrap
 from pathlib import Path
 
 from . import __version__
@@ -167,6 +168,8 @@ def main(argv=None) -> int:
         print()
         for grade, n in summary["counts"].items():
             print(f"  {n:6d}  {grade}")
+        for f in summary.get("findings") or []:
+            print("\n  " + textwrap.fill(f["text"], 96, subsequent_indent="  "))
         still = summary.get("still_on_card")
         if still and not still["saved"]:
             print(f"\n  {still['files']} files are still on the card as normal files ({still['photos']} photos, "

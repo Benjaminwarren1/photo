@@ -5,6 +5,7 @@ The rule that matters most: nothing wrong may ever land in Recovered.
 import hashlib
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from photorecover.recover import FOLDER_OK, Recovery
@@ -36,6 +37,7 @@ def run(tmp_path, builder):
     rec.run()
     assert hashlib.sha256(img.read_bytes()).hexdigest() == before, "the card image was modified"
     assert rec.summary["old_layout"] is None, "an ordinary card was mistaken for a reformatted one"
+    assert rec.summary["findings"] == [], "an ordinary card was called encrypted, wiped or fake"
     return rec
 
 
@@ -600,3 +602,75 @@ def test_files_never_deleted_are_reported_and_saved_when_the_card_will_not_open(
     assert ("Before formatting" in html or "before formatting" in html) != damaged
     lost = [i for i in rec.items if i.source == "deleted entry"]
     assert len(lost) == 1 and lost[0].grade in ("Verified", "Complete, no preview"), [(i.name, i.grade, i.note) for i in lost]
+
+
+def _kinds(tmp_path, data: bytes):
+    img = tmp_path / "card.img"
+    img.write_bytes(data)
+    rec = Recovery(img, tmp_path / "out")
+    rec.run()
+    assert not [p for p in (tmp_path / "out" / FOLDER_OK).rglob("*") if p.is_file()] or rec.summary["findings"][0]["kind"] == "fake_capacity"
+    page = (tmp_path / "out" / "report.html").read_text()
+    for f in rec.summary["findings"]:
+        assert f["text"][:20] in page
+    return [(f["kind"], f["sure"]) for f in rec.summary["findings"]]
+
+
+@pytest.mark.parametrize("lock", ["bitlocker", "luks-in-partition", "phone-adopted", "no-label"])
+def test_encrypted_drive_is_called_encrypted(tmp_path, lock):
+    """A locked drive is noise from end to end. The tool must say so, not report 'no photos found'."""
+    import struct
+    rng = np.random.default_rng(71)
+    d = bytearray(rng.integers(0, 256, 8 << 20, dtype=np.uint8).tobytes())
+    if lock == "bitlocker":
+        d[0:11] = b"\xeb\x58\x90-FVE-FS-"
+    elif lock == "luks-in-partition":
+        d[0:512] = bytes(512)
+        d[446:462] = struct.pack("<4xB3xII", 0x83, 2048, 14000)
+        d[510:512] = b"\x55\xaa"
+        d[2048 * 512:2048 * 512 + 6] = b"LUKS\xba\xbe"
+    elif lock == "phone-adopted":
+        d[0:512 * 34] = bytes(512 * 34)
+        d[512:520] = b"EFI PART"
+        d[512 + 72:512 + 88] = struct.pack("<QII", 2, 128, 128)
+        entry = bytes.fromhex("a41e3d19cab3e411b07510604b889dcf") + bytes(16) + struct.pack("<QQ", 2048, 16000) + bytes(8)
+        d[1024:1024 + 128] = entry + "android_expand".encode("utf-16-le").ljust(72, b"\0")
+    assert _kinds(tmp_path, bytes(d)) == [("encrypted", lock != "no-label")]
+
+
+def test_card_whose_files_a_phone_encrypted_is_called_encrypted(tmp_path):
+    """Some phones scramble each file on the card and leave the names. Nothing was deleted and nothing
+    can be read; the report says why."""
+    b = used_card(fat_type=32, cluster_size=4096, size_mb=64, seed=72, photos=24, rounds=1, width=800, height=600)
+    d = bytearray(b.tobytes())
+    rng = np.random.default_rng(72)
+    for t in b.history:
+        for c in t.clusters:
+            o = b.cluster_off(c)
+            d[o:o + 4096] = rng.integers(0, 256, 4096, dtype=np.uint8).tobytes()
+    assert ("encrypted", False) in _kinds(tmp_path, bytes(d))
+
+
+def test_wiped_card_is_called_wiped(tmp_path):
+    b = used_card(fat_type=16, cluster_size=8192, size_mb=64, seed=73, photos=8, width=800, height=600)
+    b.delete_all()
+    d = bytearray(b.tobytes())
+    start = min(b.cluster_off(c) for t in b.history for c in t.clusters)
+    d[start:] = bytes(len(d) - start)
+    assert _kinds(tmp_path, bytes(d)) == [("wiped", True)]
+
+
+@pytest.mark.parametrize("how", ["wraps", "drops"])
+def test_card_smaller_than_it_claims_is_flagged(tmp_path, how):
+    """A card sold with a false size either stores the upper part on top of the lower part, or
+    loses whatever is written beyond its real size."""
+    b = used_card(fat_type=16, cluster_size=8192, size_mb=128, seed=74, photos=40, rounds=1)
+    d = bytearray(b.tobytes())
+    used = sorted(b.cluster_off(c) for t in b.history for c in t.clusters)
+    if how == "wraps":
+        half = len(d) // 2
+        d[half:] = d[:half]
+    else:
+        edge = used[len(used) // 2]
+        d[edge:] = bytes(len(d) - edge)
+    assert ("fake_capacity", False) in _kinds(tmp_path, bytes(d))

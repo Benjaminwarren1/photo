@@ -826,9 +826,24 @@ class Recovery:
             self.summary["problems"] = self.problems[:50]
         self.summary["damaged_start"] = bool(getattr(self.vol if newer is None else newer.vol, "repaired", False))
         self.summary["unreadable_bytes"] = sum(b - a for a, b in self.blank_ranges)
+        self.summary["findings"] = self._findings() if self._only is None else []
         if self.out and self._only is None:
             self._write_report()
         return self.summary
+
+    def _findings(self) -> list[dict]:
+        """Anything that makes this a card no tool can recover from: encrypted, wiped, or not the size it says."""
+        first = self._first_vol
+        survey = getattr(first, "survey", None) or getattr(self.vol, "survey", None)
+        if survey is None:
+            return []
+        from .diagnose import diagnose
+        got = sum(n for g, n in self.summary["counts"].items() if g not in (GRADE_LOST, GRADE_LIVE))
+        try:
+            return diagnose(first.m, survey, first, self._existing, bool(self.unreadable), got)
+        except Exception as e:  # noqa: BLE001
+            self.problems.append(f"checking what kind of card this is: {type(e).__name__}: {e}")
+            return []
 
     def _save_existing(self) -> dict | None:
         """Files that were never deleted. They are not lost, so normally they are only counted and

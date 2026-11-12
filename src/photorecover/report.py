@@ -19,9 +19,9 @@ CSS = """
 body{font:15px/1.5 system-ui,Segoe UI,Arial,sans-serif;margin:2rem auto;max-width:70rem;padding:0 1rem;color:#1c1c1c;background:#fff}
 h1{font-size:1.5rem}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.35rem .6rem;border-bottom:1px solid #ddd;vertical-align:top}
 th{background:#f3f3f3}.g0,.g1,.g3{color:#136c2e}.g2{color:#7a5b00}.g4,.g5{color:#a14a00}.g6{color:#a11}
-.sum td{font-size:1.05rem}small{color:#555}
+.sum td{font-size:1.05rem}small{color:#555}.warn{border-left:4px solid #a14a00;padding:.6rem .9rem;background:#fff4e8}
 @media(prefers-color-scheme:dark){body{background:#161616;color:#eee}th{background:#262626}th,td{border-color:#3a3a3a}
-.g0,.g1,.g3{color:#6fd08a}.g2{color:#e2c15a}.g4,.g5{color:#f0a060}.g6{color:#ff8080}small{color:#aaa}}
+.g0,.g1,.g3{color:#6fd08a}.g2{color:#e2c15a}.g4,.g5{color:#f0a060}.g6{color:#ff8080}small{color:#aaa}.warn{background:#33261a;border-color:#f0a060}}
 """
 
 
@@ -39,6 +39,8 @@ def write_html(path: Path, summary: dict, rows: list[dict]) -> None:
             "worked out from what is still on it."
             + (f" {summary['since_format']} files deleted since that format were looked for first, in the card's current layout."
                if summary.get("since_format") else "") + "</p>") if summary.get("old_layout") else "",
+           "".join(f"<p class=warn><b>{'Nothing can be recovered from this card.' if f['sure'] else 'Please read this first.'}</b> "
+                   f"{e(f['text'])}</p>" for f in summary.get("findings") or []),
            _still(summary.get("still_on_card"), e),
            ("<p>The start of this card was damaged, which is what makes a computer say the card needs formatting. "
             "A spare copy of the card's layout was found further in and used to read it. Do not format the card.</p>")

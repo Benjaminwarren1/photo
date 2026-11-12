@@ -87,7 +87,7 @@ const views={
  done(){steps(5);const c=(S.summary||{}).counts||{};
   const rows=[["Verified","recovered and fully checked"],["Complete, no preview","recovered, complete"],["Recovered, unverified","recovered, but this file type can't be checked"],["Partial","partly recovered; the rest is not on the card"],["Needs review","close calls that need a person to decide"],["Not recoverable","could not be recovered"]]
    .filter(r=>c[r[0]]).map(r=>`<tr><td class="n">${c[r[0]]}</td><td>${r[1]}</td></tr>`).join("");
-  return `<h1>Finished</h1><table>${rows||"<tr><td>No deleted files were found on this card.</td></tr>"}</table>
+  return `<h1>Finished</h1>${((S.summary||{}).findings||[]).map(f=>`<div class="note">${esc(f.text)}</div>`).join("")}<table>${rows||"<tr><td>No deleted files were found on this card.</td></tr>"}</table>
   <p class="soft" style="margin-top:1rem">Saved in ${esc(S.folder)}. The copy of your card (card.img) is there too; keep it until you are happy with the results.</p>
   ${S.to_review?`<div class="note"><b>${S.to_review} photo${S.to_review>1?"s":""} need your eye.</b> The program found more than one piece of the card that could come next and would rather ask than guess. <button style="margin-left:.5rem" onclick="review()">Decide now</button></div>`:""}
   <div class="actions"><button class="go" onclick="api('open',{what:'folder'})">Open the folder</button><button onclick="api('open',{what:'report'})">See the full report</button><button onclick="api('restart')">Recover another card</button></div>`;},

@@ -176,7 +176,7 @@ def _infer(m, vol: FatVolume | None, log=None, entries: list[Entry] | None = Non
         # Photos that sit where the current layout puts files say nothing about an older one, and
         # "every 512 bytes" is no layout at all: pictures packed inside other files line up that way.
         on_grid = (pos >= vol.data_off) & ((pos - vol.data_off) % vol.cl == 0)
-        pos = pos[~on_grid] if on_grid.mean() < 0.5 else pos[:0]
+        pos = pos[~on_grid] if len(pos) and on_grid.mean() < 0.5 else pos[:0]
         sizes = [cs for cs in CLUSTER_SIZES if cs >= 2048]
     if len(pos) >= 8:
         for cs in reversed(sizes):
