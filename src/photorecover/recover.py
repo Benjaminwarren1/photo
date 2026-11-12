@@ -217,8 +217,11 @@ class Recovery:
         self.out = Path(out_dir) if out_dir else None
         say = log or (lambda msg: None)
 
+        self.steps: list[list] = []       # [message, time it started] for each step, for the report
+
         def _log(msg):               # a new step starts: the count within the old one no longer applies
             self.progress = None
+            self.steps.append([msg, time.time()])
             say(msg)
         self.log = _log
         self.items: list[Item] = []
@@ -448,26 +451,43 @@ class Recovery:
         heads = [int(c) for c in np.flatnonzero(avail) if vol.cluster(int(c))[:3] == b"\xff\xd8\xff"]
         if heads:
             self.log(f"Looking at {len(heads)} photo starts that have no folder entry")
-        n_found = 0
-        for k, c in enumerate(heads):
-            self.progress = (k, len(heads))
-            if not avail[c]:
-                continue
+        found: list[Item] = []
+
+        def carve(c: int, wide: bool):
             # Where a listed photo could not be finished, its folder entry may be out of date and a
             # different, whole photo may start there: worth a look, but not another search of the card.
-            r = attempt(None, rb.rebuild, c, None, contiguous_only=c in tried, wide=False)
+            r = attempt(None, rb.rebuild, c, None, contiguous_only=c in tried, wide=wide)
             if r is not None and r.status == "complete":
-                n_found += 1
-                it = Item(name=f"found_{n_found:05d}.jpg", folder="Found by scanning", size=r.size, start=c,
+                it = Item(name="", folder="Found by scanning", size=r.size, start=c,
                           kind="jpeg", source="found by scanning")
                 pieces = 1 + sum(1 for a, b in zip(r.chain, r.chain[1:]) if b != a + 1)
                 self._accept(it, r, "found whole" if pieces == 1 else f"rebuilt from {pieces} pieces")
                 claim(r.chain)
-                items.append(it)
-                for old in items:      # the listed photo that began here is this one's stale folder entry
-                    if old is not it and old.kind == "jpeg" and old.start == c and old.grade in (GRADE_REVIEW, GRADE_PARTIAL):
-                        old.grade, old.chain, old.candidates, old.percent = GRADE_LOST, [], [], 0.0
-                        old.note = f"its space now holds a different, complete photo (saved as {it.name})"
+                found.append(it)
+            return r
+
+        again: list[int] = []
+        for k, c in enumerate(heads):
+            self.progress = (k, len(heads))
+            if avail[c]:
+                r = carve(c, False)
+                # One that joined a piece by searching nearby, then got stuck, has shown that its
+                # pieces are on the card: it has earned a search of all of it.
+                if r is not None and r.status != "complete" and r.picks and c not in tried:
+                    again.append(c)
+        if again:
+            self.log(f"Searching the whole card for the rest of {len(again)} of them")
+        for k, c in enumerate(again):
+            self.progress = (k, len(again))
+            if avail[c]:
+                carve(c, True)
+        for n, it in enumerate(sorted(found, key=lambda i: i.start), 1):
+            it.name = f"found_{n:05d}.jpg"
+            items.append(it)
+            for old in items:      # the listed photo that began here is this one's stale folder entry
+                if old is not it and old.kind == "jpeg" and old.start == it.start and old.grade in (GRADE_REVIEW, GRADE_PARTIAL):
+                    old.grade, old.chain, old.candidates, old.percent = GRADE_LOST, [], [], 0.0
+                    old.note = f"its space now holds a different, complete photo (saved as {it.name})"
 
         self.items = items
         self._rb, self._avail = rb, avail
@@ -477,6 +497,8 @@ class Recovery:
                             cluster_size=cl, clusters=vol.ncl, card_in_use=round(float(used_fraction), 3),
                             files_listed=len(items), counts=self._counts(), seconds=round(time.time() - t0, 1),
                             fast_decoder=jpeg.HAVE_C, problems=self.problems[:50],
+                            steps=[[m, round((self.steps[i + 1][1] if i + 1 < len(self.steps) else time.time()) - t, 1)]
+                                   for i, (m, t) in enumerate(self.steps)],
                             old_layout=self.old_layout)
         if self.out:
             self._write_report()
