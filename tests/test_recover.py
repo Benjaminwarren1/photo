@@ -850,8 +850,11 @@ def test_motion_photo_says_its_video_is_whole(tmp_path):
     start = bad.index(b"ftyp") - 4
     first = int.from_bytes(bad[start:start + 4], "big")
     bad[start + first:start + first + 8] = bytes(8)                  # the header of its second part
+    notes_block = bytes(1196) + (1196).to_bytes(4, "little") + b"ctrace\0\0"
+    traced = make_photo(105, 800, 600) + notes_block
     b.write("DCIM/MVIMG_0001.JPG", good)
     b.write("DCIM/MVIMG_0002.JPG", bytes(bad))
+    b.write("DCIM/IMG_0003.JPG", traced)
     b.delete_all()
     img = tmp_path / "card.img"
     b.save(img)
@@ -860,3 +863,4 @@ def test_motion_photo_says_its_video_is_whole(tmp_path):
     notes = {i.size: i.note for i in rec.items if i.saved_as}
     assert "motion photo" in notes[len(good)], notes
     assert "without checking" in notes[len(bad)], notes
+    assert "processing notes" in notes[len(traced)], notes

@@ -11,6 +11,7 @@ import json
 import os
 import struct
 import time
+import warnings
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -21,6 +22,8 @@ from PIL import Image
 
 from . import __version__, jpeg
 from . import formats
+
+warnings.filterwarnings("ignore", message="Image appears to be a malformed MPO")
 from .fat import Entry, NotFat, open_volume
 from .rebuild import Judge, Rebuilder, Result
 from .video import CONTAINERS, VideoRebuilder
@@ -876,6 +879,11 @@ class Recovery:
                 if got and (b"moov" in got[1]) and at + near - 4 + got[0] >= len(data) - max(4096, len(data) // 50):
                     return ("a motion photo: the picture passes its checks, and the short video stored after it "
                             "runs unbroken to the end of the file (its frames themselves were not checked)")
+            tail = len(data) - at
+            if tail >= 12 and bytes(data[-8:]) == b"ctrace\0\0" and int.from_bytes(data[-12:-8], "little") == tail - 12:
+                # a block of processing notes some phone cameras add; it states its own length
+                return ("the phone camera's own processing notes follow the picture, and they end exactly "
+                        "where they say they do, so the file is whole")
             if bytes(data[at:at + 2]) == b"\xff\xd8" and audit_jpeg(bytes(data[at:]))[0]:
                 return "holds a second picture after the first (as 3D photos do), which also passes its check"
         except Exception:  # noqa: BLE001

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import struct
+import warnings
 
 _SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4}
 RAW_EXT = {"orf", "rw2", "nef", "nrw", "cr2", "arw", "sr2", "srf", "pef", "dng", "tif", "tiff", "3fr", "erf", "kdc", "dcr", "iiq"}
@@ -175,8 +176,10 @@ def check_tiff(data, size: int | None = None, audit=None) -> tuple[str, str] | N
     for o, ln in t.jpegs:
         part = bytes(data[o:o + ln])
         try:
-            with Image.open(io.BytesIO(part)) as im:
-                im.load()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with Image.open(io.BytesIO(part)) as im:
+                    im.load()
         except Exception:  # noqa: BLE001
             return None                     # a preview inside the file is damaged: so is the file
         if audit is not None and not audit(part)[0]:
