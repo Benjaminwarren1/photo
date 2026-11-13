@@ -553,6 +553,12 @@ class Recovery:
         self.summary["unreadable_bytes"] = sum(b - a for a, b in self.blank_ranges)
         if self._only is None and not self._part:
             self._other_partitions()
+        kinds = {"photos": 0, "videos": 0, "other": 0}       # what the files that cannot be checked are
+        for it in self.items:
+            if it.grade == GRADE_UNVERIFIED:
+                ext = it.name.rpartition(".")[2].lower() if "." in it.name else ""
+                kinds["photos" if ext in PHOTO_EXT else "videos" if ext in VIDEO_EXT else "other"] += 1
+        self.summary["unverified_kinds"] = kinds
         self.summary["findings"] = self._findings() if self._only is None and not self._part else []
         unsaved = sum(1 for it in self.items if getattr(it, "_unsaved", False))
         if unsaved and self._only is None and not self._part:
