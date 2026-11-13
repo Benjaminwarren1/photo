@@ -23,6 +23,7 @@ from PIL import Image
 
 from . import __version__, jpeg
 from . import formats
+from . import streams
 
 warnings.filterwarnings("ignore", message="Image appears to be a malformed MPO")
 from .fat import Entry, NotFat, open_volume
@@ -39,6 +40,7 @@ SIGNATURES = {            # extension -> bytes a file of that type starts with (
                                   "erf", "kdc", "dcr", "iiq", "orf", "rw2")},
     "cr3": (4, b"ftyp"), "raf": (0, b"FUJIFILMCCD-RAW"),     # camera RAW built on TIFF: see formats.py
     "mpo": (0, b"\xff\xd8\xff"),       # a 3D photo: two JPEGs in one file
+    **{ext: (0, None) for ext in streams.TS_EXT},        # dashcam and camcorder video: see streams.py
 }
 BOX_TYPES = {b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide", b"uuid", b"meta", b"udta", b"pnot", b"moof",
              b"mfra", b"sidx", b"styp", b"PICT", b"pict", b"thum", b"junk"}
@@ -56,7 +58,7 @@ GRADE_PARTIAL = "Partial"
 GRADE_REVIEW = "Needs review"
 GRADE_LOST = "Not recoverable"
 GRADE_LIVE = "Still on the card"
-VIDEO_EXT = {"mp4", "mov", "3gp", "3g2", "m4v", "avi", "mts", "m2ts", "mkv", "lrv"}
+VIDEO_EXT = {"mp4", "mov", "3gp", "3g2", "m4v", "avi", "mkv", "lrv"} | streams.TS_EXT
 PHOTO_EXT = JPEG_EXT | {"png", "gif", "bmp", "heic", "heif", "mpo", "tif", "tiff", "dng", "nef", "nrw", "pef", "cr2", "cr3", "arw",
                         "raf", "orf", "rw2", "webp"}
 
@@ -261,6 +263,10 @@ def check_other(ext: str, data):
         if got and got[0] >= 0.98 * len(data) and b"mdat" in got[1] and ({b"moov", b"moof", b"meta"} & got[1]):
             return "unverified", lined_up
         return None
+    if ext == "avi":
+        return streams.check_avi(data)
+    if ext in streams.TS_EXT:
+        return streams.check_ts(data, ext)
     if ext == "gif":
         return ("unverified", "its parts line up from start to end; this file type carries no further check") \
             if _gif_lines_up(data) else None
@@ -468,7 +474,8 @@ class Recovery:
                 c = sv.starts(kind, vol.data_off, vol.cl, vol.max_cluster)
                 return c[avail[c]].tolist()
             self._other_starts = sorted([(c, "png") for c in at("png")] + [(c, "ftyp") for c in at("mp4")]
-                                        + [(c, "tiff") for c in at("tif") + at("tifm")])
+                                        + [(c, "tiff") for c in at("tif") + at("tifm")]
+                                        + [(c, "riff") for c in at("riff")] + [(c, "ts") for c in at("ts")])
             return at("jpg")
         step = max(1, (64 << 20) // vol.cl)
         for c0 in range(2, vol.max_cluster + 1, step):
@@ -482,6 +489,12 @@ class Recovery:
                 vid = (a[:, 4] == 0x66) & (a[:, 5] == 0x74) & (a[:, 6] == 0x79) & (a[:, 7] == 0x70) & free
                 self._other_starts += [(int(c) + c0, "png") for c in np.flatnonzero(png)]
                 self._other_starts += [(int(c) + c0, "ftyp") for c in np.flatnonzero(vid)]
+                riff = (a[:, 0] == 0x52) & (a[:, 1] == 0x49) & (a[:, 2] == 0x46) & (a[:, 3] == 0x46) & free
+                self._other_starts += [(int(c) + c0, "riff") for c in np.flatnonzero(riff)]
+            if vol.cl >= 512:
+                ts = ((a[:, 0] == 0x47) & (a[:, 188] == 0x47) & (a[:, 376] == 0x47)
+                      | (a[:, 4] == 0x47) & (a[:, 196] == 0x47) & (a[:, 388] == 0x47)) & free
+                self._other_starts += [(int(c) + c0, "ts") for c in np.flatnonzero(ts)]
         self._other_starts.sort()
         return out
 
@@ -908,8 +921,16 @@ class Recovery:
         if others_found:
             self.log(f"Looking at {len(others_found)} other pictures and videos that have no folder entry")
         self._numbers = {"png": 0, "video": 0, "heic": 0, "raw": 0}
+        # a transport stream looks like the start of one at many places along its length, so one
+        # already saved under its own name must not be found again in pieces
+        held = np.zeros(self.vol.max_cluster + 2, bool)
+        for it in self._items:
+            if it.chain:
+                held[np.asarray([x for x in it.chain if x >= 0], np.int64)] = True
         for k, (c, kind) in enumerate(others_found):
             self.progress = (k, len(others_found))
+            if kind == "ts" and held[c]:
+                continue
             if self._avail[c]:
                 self._attempt(None, self._scan_other, c, kind)
 
@@ -945,6 +966,12 @@ class Recovery:
             checked = formats.check_tiff(vol.read_chain(chain, size), size, audit_jpeg)
             if checked is not None:
                 self._found_other(c, "raw", ext, size, chain, GRADE_UNVERIFIED, checked[1])
+            return
+        if kind == "riff":
+            self._scan_avi(c, pos, data_end)
+            return
+        if kind == "ts":
+            self._scan_ts(c, pos, data_end)
             return
         got = boxes_length(vol.m, pos, data_end)
         if got is None or not ({b"moov", b"moof", b"meta"} & got[1]):
@@ -999,6 +1026,68 @@ class Recovery:
         elif brand in (b"heic", b"heix", b"mif1", b"msf1", b"avif") and b"meta" in seen and b"mdat" in seen:
             self._found_other(c, "heic", "avif" if brand == b"avif" else "heic", size, chain, GRADE_UNVERIFIED,
                         "its parts line up from start to end; this file type cannot be checked further")
+
+    def _free_run(self, c: int, most: int) -> int:
+        """How many clusters from c on, up to most, are unclaimed and hold something."""
+        k = c
+        while k <= self.vol.max_cluster and k < c + most and self._avail[k] and not self._blank[k]:
+            k += 1
+        return k - c
+
+    def _scan_avi(self, c: int, pos: int, data_end: int) -> None:
+        vol, cl = self.vol, self.vol.cl
+        if bytes(vol.m[pos + 8:pos + 12]) != b"AVI ":
+            return
+        size = streams.avi_length(vol.m, pos, data_end)
+        if size:
+            chain = list(range(c, c + -(-size // cl)))
+            if not self._avail[chain].all():
+                return
+            checked = streams.check_avi(vol.read_chain(chain, size))
+            if checked is not None:
+                self._found_other(c, "video", "avi", size, chain,
+                                  GRADE_VERIFIED if checked[0] == "verified" else GRADE_UNVERIFIED, checked[1])
+                return
+        # A recording that was cut off, or whose end has been overwritten: keep the frames that are
+        # there, in one run. Without its index a player has to feel its way through, and many can.
+        limit = pos + self._free_run(c, (16 << 30) // cl) * cl
+        have = streams.unfinished_avi(vol.m, pos, min(limit, data_end))
+        if have and have >= 256 << 10:
+            self._found_other(c, "video", "avi", have, list(range(c, c + -(-have // cl))), GRADE_PARTIAL,
+                              "a recording that was cut off, or whose end is no longer on the card: its frames are "
+                              "here but its index is not, so some players will refuse it. VLC will usually play it, "
+                              "and a video repair tool can rebuild the index")
+
+    def _scan_ts(self, c: int, pos: int, data_end: int) -> None:
+        """Keep the run of stream packets that starts at cluster c. Where the packets' running count
+        jumps, a different recording begins (loop recording writes new clips over old ones): each
+        is kept as its own file."""
+        vol, cl = self.vol, self.vol.cl
+        lead = 0                     # bytes of cluster c before its first whole packet
+        for _ in range(4096):
+            limit = min(pos + self._free_run(c, (64 << 30) // cl) * cl, data_end)
+            run, step, off = streams.ts_run(vol.m, pos + lead, limit)
+            if not run:
+                return
+            jump = streams.ts_jump(vol.m, pos + lead, run, step, off)
+            size = lead + (run if jump is None else jump * step)
+            n = -(-size // cl)
+            if size >= 1 << 20:      # anything shorter is not worth keeping, or is a chance likeness
+                ext = "ts" if step == 188 else "mts"
+                if not lead and streams.ts_begins(vol.m, pos, step, off):
+                    self._found_other(c, "video", ext, size, list(range(c, c + n)), GRADE_UNVERIFIED,
+                                      f"a recording from its beginning: all {size // step} of its packets follow "
+                                      "one another. This kind of video does not say how long it should be, so "
+                                      "play it through to see that it runs to the end")
+                else:
+                    self._found_other(c, "video", ext, size, list(range(c, c + n)), GRADE_PARTIAL,
+                                      "a stretch from the middle of a recording, with its beginning missing; most "
+                                      "players will play it from where it starts")
+            if jump is None or c + n > vol.max_cluster or not self._avail[c + n]:
+                return
+            # the other recording carries on from the next whole cluster
+            lead = (size - n * cl) % step
+            c, pos = c + n, pos + n * cl
 
     def _name_found(self, found) -> None:
         """Number the photos found by scanning; a listed photo left unfinished that began where

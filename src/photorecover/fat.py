@@ -142,7 +142,7 @@ def _slot_ok(a: np.ndarray) -> np.ndarray:
 
 
 SURVEY_MAGIC = dict(jpg=(0, b"\xff\xd8\xff"), png=(0, b"\x89PNG"), mp4=(4, b"ftyp"), zip=(0, b"PK\x03\x04"),
-                    gif=(0, b"GIF8"), tif=(0, b"II*\0"), tifm=(0, b"MM\0*"))
+                    gif=(0, b"GIF8"), tif=(0, b"II*\0"), tifm=(0, b"MM\0*"), riff=(0, b"RIFF"))
 
 
 class Survey:
@@ -171,6 +171,9 @@ class Survey:
                 for i in range(1, len(magic)):
                     ok &= a[:, o + i] == magic[i]
                 sig[kind] = np.flatnonzero(ok) + s0
+            # a transport stream: the same marker byte at the start of every 188- or 192-byte packet
+            sig["ts"] = np.flatnonzero((a[:, 0] == 0x47) & (a[:, 188] == 0x47) & (a[:, 376] == 0x47)
+                                       | (a[:, 4] == 0x47) & (a[:, 196] == 0x47) & (a[:, 388] == 0x47)) + s0
             keep = (a[:, 0] != 0) & ~same & _slot_ok(a[:, :32])
             keep &= (a[:, 32] == 0) | _slot_ok(a[:, 32:64])
             return np.packbits(same), sig, np.flatnonzero(keep) + s0
@@ -185,7 +188,7 @@ class Survey:
         self._per = per
         self._same = [p[0] for p in parts]                       # packed bits, one array per stretch
         self.sigs = {kind: (np.concatenate([p[1][kind] for p in parts]) if parts else np.zeros(0, np.int64))
-                     for kind in SURVEY_MAGIC}
+                     for kind in (*SURVEY_MAGIC, "ts")}
         self.dirs = np.concatenate([p[2] for p in parts]) if parts else np.zeros(0, np.int64)
 
     def blank(self, s0: int, count: int) -> np.ndarray:
