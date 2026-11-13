@@ -180,8 +180,12 @@ def main(argv=None) -> int:
         if still and not still["saved"]:
             print(f"\n  {still['files']} files are still on the card as normal files ({still['photos']} photos, "
                   f"{still['videos']} videos). They are not lost and were not copied; copy them off before formatting.")
-        print(f"\nSaved to: {out}\nFull details: {out / 'report.html'}")
-    return 0
+        if summary.get("report_error"):
+            print(f"\nSaved to: {out}\nThe report could not be written there ({summary['report_error']}). "
+                  "If that drive is full, free some space and run again.")
+        else:
+            print(f"\nSaved to: {out}\nFull details: {out / 'report.html'}")
+    return 4 if summary.get("report_error") or any(f["kind"] == "out_full" for f in summary.get("findings") or []) else 0
 
 
 def pilot(rec: Recovery, out: Path, stdin=None, stdout=None) -> int:

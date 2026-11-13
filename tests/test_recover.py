@@ -976,3 +976,36 @@ def test_one_malformed_file_never_stops_the_run(tmp_path, monkeypatch):
     assert by["_DD.MPO"].grade != "Verified"
     assert "unexpected problem" in by["_OOM.GIF"].note and any("ZeroDivisionError" in p for p in rec.summary["problems"])
     assert (tmp_path / "out" / "report.html").exists()
+
+
+def test_a_full_output_drive_is_said_plainly_and_leaves_no_cut_short_file(tmp_path, monkeypatch):
+    """The drive being saved to fills up part way: what was saved stays, nothing half-written is
+    left behind, the rest is marked as not saved, and the run ends with a plain explanation."""
+    import errno
+    from photorecover import recover as rmod
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    b = FatBuilder(64, 16, 4096)
+    for n in range(6):
+        b.write(f"DCIM/P{n}.JPG", make_photo(140 + n, 800, 600))
+    b.delete_all()
+    img = tmp_path / "card.img"
+    b.save(img)
+    calls = []
+
+    def full_after_two(self, data):
+        calls.append(self)
+        if len(calls) > 2:
+            self.open("wb").write(data[:100])            # what a full drive leaves: the start of a file
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(self, data)
+    real = Path.write_bytes
+    monkeypatch.setattr(Path, "write_bytes", full_after_two)
+    rec = Recovery(img, tmp_path / "out")
+    rec.run()
+    monkeypatch.undo()
+    saved = [p for p in (tmp_path / "out").rglob("*.JPG")]
+    assert len(saved) == 2 and len(calls) == 3, "it kept trying after the drive filled, or left a cut-short file"
+    assert sum(1 for i in rec.items if "ran out of space" in i.note and not i.saved_as) == 4
+    first = rec.summary["findings"][0]
+    assert first["kind"] == "out_full" and "4 files" in first["text"]

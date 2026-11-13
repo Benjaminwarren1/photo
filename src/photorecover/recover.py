@@ -5,6 +5,7 @@ The image is only ever read. Output goes to a separate folder.
 """
 from __future__ import annotations
 
+import errno
 import io
 import itertools
 import json
@@ -46,6 +47,7 @@ FOLDER_OK = "Recovered"
 FOLDER_PARTIAL = "Recovered - Partial"
 FOLDER_FILLED = "Recovered - Preview filled"
 FOLDER_LIVE = "Still on the card"
+FULL_NOTE = "not saved: the drive the results are being saved to ran out of space"
 
 GRADE_VERIFIED = "Verified"
 GRADE_NO_PREVIEW = "Complete, no preview"
@@ -373,6 +375,7 @@ class Recovery:
         self._only = _only          # internal: recover just these folder entries, and do not scan for more
         self._part = _vol is not None   # internal: one more partition of a card already being recovered
         self._shared_taken = _taken
+        self._out_full = False
         self.out = Path(out_dir) if out_dir else None
         say = log or (lambda msg: None)
 
@@ -538,8 +541,19 @@ class Recovery:
         if self._only is None and not self._part:
             self._other_partitions()
         self.summary["findings"] = self._findings() if self._only is None and not self._part else []
+        unsaved = sum(1 for it in self.items if getattr(it, "_unsaved", False))
+        if unsaved and self._only is None and not self._part:
+            self.summary["findings"].insert(0, dict(kind="out_full", sure=True, text=(
+                f"The drive the results were being saved to filled up, so {unsaved} file{'s' if unsaved != 1 else ''} "
+                "that could be recovered "
+                f"{'were' if unsaved != 1 else 'was'} not saved. Nothing is wrong with the card. Free some space, or "
+                "choose a folder on a drive with more room, and run the recovery again.")))
         if self.out and self._only is None and not self._part:
-            self._write_report()
+            try:
+                self._write_report()
+            except OSError as e:
+                self.summary["report_error"] = f"{type(e).__name__}: {e}"
+                self.summary["problems"] = (self.problems + [f"the report could not be written: {e}"])[:50]
         return self.summary
 
     def _claim(self, chain) -> None:
@@ -1332,9 +1346,21 @@ class Recovery:
             self.log(f"Checking every recovered file once more and saving {len(todo)} files")
         for k, (it, verdict) in enumerate(_ahead(todo, self._audit, _workers())):
             self.progress = (k, len(todo))
+            if self._out_full:
+                it._unsaved, it.saved_as = True, ""
+                it.note = (it.note + "; " if it.note else "") + FULL_NOTE
+                continue
             try:
                 self._deliver_item(it, verdict)
             except Exception as e:  # noqa: BLE001
+                if isinstance(e, OSError) and (e.errno == errno.ENOSPC or getattr(e, "winerror", None) in (39, 112)):
+                    # the drive being saved to is full: nothing more can be written, and saying so
+                    # once is worth more than the same failure for every file that follows
+                    self._out_full = True
+                    self.problems.append(f"{it.name}: the drive being saved to is full")
+                    it._unsaved, it.saved_as = True, ""
+                    it.note = (it.note + "; " if it.note else "") + FULL_NOTE
+                    continue
                 self.problems.append(f"{it.name}: could not be saved ({type(e).__name__}: {e})")
                 it.note = (it.note + "; " if it.note else "") + "this file could not be written to the output folder"
                 it.saved_as = ""
@@ -1393,7 +1419,7 @@ class Recovery:
             taken.add(rel.lower())
             dest = self.out / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
+            _write(dest, data)
             if it.mtime:
                 try:
                     y, mo, d, h, mi = it.mtime
@@ -1405,7 +1431,7 @@ class Recovery:
             if getattr(it, "_whole", False):
                 stem, dot, ext = rel.rpartition(".")
                 wrel = stem.rsplit(" (", 1)[0] + f" (whole file, damaged from {it.percent:.0f}%).jpg"
-                (self.out / wrel).write_bytes(bytes(vol.read_run(it.start, it.size)))
+                _write(self.out / wrel, bytes(vol.read_run(it.start, it.size)))
                 taken.add(wrel.lower())
                 it.note += (f"; the whole file is saved too, as {wrel.rpartition('/')[2]}: below the unreadable "
                             "part it may look shifted or discoloured")
@@ -1417,7 +1443,7 @@ class Recovery:
                     frel = stem.rsplit(" (", 1)[0] + f" ({it.percent:.0f}% real, rest from preview).jpg"
                     fdest = self.out / frel
                     fdest.parent.mkdir(parents=True, exist_ok=True)
-                    fdest.write_bytes(filled)
+                    _write(fdest, filled)
                     taken.add(frel.lower())
                     it.filled_as = frel
 
@@ -1431,6 +1457,18 @@ class Recovery:
         self.out.mkdir(parents=True, exist_ok=True)
         (self.out / "report.json").write_text(json.dumps(dict(summary=self.summary, files=rows), indent=1))
         write_html(self.out / "report.html", self.summary, rows)
+
+
+def _write(dest: Path, data: bytes) -> None:
+    """Write a file whole or not at all: a cut-short copy must never be left among the results."""
+    try:
+        dest.write_bytes(data)
+    except OSError:
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _runs(chain: list[int]) -> list[list[int]]:
