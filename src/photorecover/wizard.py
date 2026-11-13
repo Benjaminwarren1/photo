@@ -186,7 +186,7 @@ class Session:
             if self.step == "cloning":
                 s["clone"] = self.clone_info
             if self.step in ("recovering", "done"):
-                s["log"] = self.log[-6:]
+                s["log"] = self.log[-40:]
                 prog = self.running.progress if (self.step == "recovering" and self.running) else None
                 if prog:
                     s["progress"] = dict(done=prog[0], total=prog[1])
