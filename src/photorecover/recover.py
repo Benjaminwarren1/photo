@@ -20,6 +20,7 @@ import numpy as np
 from PIL import Image
 
 from . import __version__, jpeg
+from . import formats
 from .fat import Entry, NotFat, open_volume
 from .rebuild import Judge, Rebuilder, Result
 from .video import CONTAINERS, VideoRebuilder
@@ -29,8 +30,9 @@ SIGNATURES = {            # extension -> bytes a file of that type starts with (
     "png": (0, b"\x89PNG\r\n\x1a\n"), "gif": (0, b"GIF8"), "bmp": (0, b"BM"),
     "mp4": (4, b"ftyp"), "mov": (4, None), "3gp": (4, b"ftyp"), "m4v": (4, b"ftyp"),
     "heic": (4, b"ftyp"), "avi": (0, b"RIFF"), "wav": (0, b"RIFF"), "pdf": (0, b"%PDF"),
-    "zip": (0, b"PK"), "cr2": (0, b"II*\0"), "nef": (0, b"MM\0*"), "arw": (0, b"II*\0"),
-    "dng": (0, None), "tif": (0, None), "mp3": (0, None),
+    "zip": (0, b"PK"), "mp3": (0, None),
+    **{ext: (0, None) for ext in ("nef", "nrw", "cr2", "arw", "sr2", "srf", "pef", "dng", "tif", "tiff", "3fr",
+                                  "erf", "kdc", "dcr", "iiq")},     # camera RAW built on TIFF: see formats.py
     "mpo": (0, b"\xff\xd8\xff"),       # a 3D photo: two JPEGs in one file
 }
 BOX_TYPES = {b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide", b"uuid", b"meta", b"udta", b"pnot", b"moof",
@@ -49,7 +51,7 @@ GRADE_REVIEW = "Needs review"
 GRADE_LOST = "Not recoverable"
 GRADE_LIVE = "Still on the card"
 VIDEO_EXT = {"mp4", "mov", "3gp", "3g2", "m4v", "avi", "mts", "m2ts", "mkv", "lrv"}
-PHOTO_EXT = JPEG_EXT | {"png", "gif", "bmp", "heic", "heif", "mpo", "tif", "tiff", "dng", "nef", "cr2", "cr3", "arw",
+PHOTO_EXT = JPEG_EXT | {"png", "gif", "bmp", "heic", "heif", "mpo", "tif", "tiff", "dng", "nef", "nrw", "pef", "cr2", "cr3", "arw",
                         "raf", "orf", "rw2", "webp"}
 
 
@@ -178,11 +180,15 @@ def boxes_length(buf, pos: int, end: int) -> tuple[int, set, bytes] | None:
     return (p - pos, seen, brand) if len(seen) >= 2 else None
 
 
-def check_other(ext: str, data) -> str | None:
-    """'verified', 'unverified' or None (clearly not this file any more)."""
+def check_other(ext: str, data):
+    """'verified', 'unverified' or None (clearly not this file any more); or (one of those, a note)."""
     sig = SIGNATURES.get(ext)
     if sig and sig[1] is not None and data[sig[0]:sig[0] + len(sig[1])] != sig[1]:
         return None
+    if ext in formats.RAW_EXT:
+        return formats.check_tiff(data, len(data), audit_jpeg)
+    if ext == "mpo":
+        return formats.check_mpo(data, audit_jpeg)
     if ext == "png":
         return "verified" if _valid_png(data) else None
     if ext in ("mp4", "mov", "3gp", "m4v", "heic"):
@@ -391,7 +397,8 @@ class Recovery:
             def at(kind):
                 c = sv.starts(kind, vol.data_off, vol.cl, vol.max_cluster)
                 return c[avail[c]].tolist()
-            self._other_starts = sorted([(c, "png") for c in at("png")] + [(c, "ftyp") for c in at("mp4")])
+            self._other_starts = sorted([(c, "png") for c in at("png")] + [(c, "ftyp") for c in at("mp4")]
+                                        + [(c, "tiff") for c in at("tif") + at("tifm")])
             return at("jpg")
         step = max(1, (64 << 20) // vol.cl)
         for c0 in range(2, vol.max_cluster + 1, step):
@@ -603,6 +610,9 @@ class Recovery:
                 ext = "png"
             # only kinds that can be checked need reading through; the rest are saved as they are
             verdict = check_other(ext, vol.read_chain(chain, it.size)) if ext in SIGNATURES else "unverified"
+            why = "this file type cannot be checked; open it to make sure"
+            if isinstance(verdict, tuple):
+                verdict, why = verdict
             if verdict is None:
                 it.note = "its space no longer holds this kind of file (overwritten, or stored in pieces)"
                 continue
@@ -612,8 +622,10 @@ class Recovery:
             if verdict == "verified":
                 it.grade = GRADE_VERIFIED
                 claim(chain)
+                if why and not why.startswith("this file type"):
+                    it.note = why
             else:
-                it.note = "this file type cannot be checked; open it to make sure"
+                it.note = why
 
         # Pass 2: photos in pieces. Two rounds, because every photo finished frees
         # the others from having to consider its clusters.
@@ -672,7 +684,7 @@ class Recovery:
         for it, r in loose:
             if avail[np.asarray(r.chain, np.int64)].all():
                 self._accept(it, r, "found whole")
-                it.note = "has extra data after the picture, copied without checking"
+                it.note = self._trailer_note(it, r)
                 claim(r.chain)
             else:
                 it.note = "its space was reused by a later file"
@@ -746,7 +758,7 @@ class Recovery:
         if others_found:
             self.log(f"Looking at {len(others_found)} other pictures and videos that have no folder entry")
         data_end = vol.data_off + (vol.max_cluster - 1) * cl
-        numbers = {"png": 0, "video": 0, "heic": 0}
+        numbers = {"png": 0, "video": 0, "heic": 0, "raw": 0}
 
         def found_other(c, kind, ext, size, chain, grade, note, percent=100.0):
             numbers[kind] += 1
@@ -764,6 +776,18 @@ class Recovery:
                 chain = list(range(c, c + -(-size // cl))) if size else []
                 if size and avail[chain].all():
                     found_other(c, "png", "png", size, chain, GRADE_VERIFIED, "every part of it passes its own checksum")
+                return
+            if kind == "tiff":
+                got = formats.tiff_length(vol.m, pos, data_end)
+                if got is None:
+                    return
+                size, ext = got
+                chain = list(range(c, c + -(-size // cl)))
+                if not avail[chain].all():
+                    return
+                checked = formats.check_tiff(vol.read_chain(chain, size), size, audit_jpeg)
+                if checked is not None:
+                    found_other(c, "raw", ext, size, chain, GRADE_UNVERIFIED, checked[1])
                 return
             got = boxes_length(vol.m, pos, data_end)
             if got is None:
@@ -833,6 +857,25 @@ class Recovery:
         if self.out and self._only is None and not self._part:
             self._write_report()
         return self.summary
+
+    def _trailer_note(self, it, r) -> str:
+        """What follows the picture inside its file. Phones add a short video (a motion or live
+        photo), 3D cameras a second picture; either can be checked for being whole."""
+        plain = "has extra data after the picture, copied without checking"
+        try:
+            data = self.vol.read_chain(r.chain, it.size)
+            at = int(r.image_bytes)
+            near = bytes(data[at:at + 4096]).find(b"ftyp")
+            if near >= 4:
+                got = boxes_length(data, at + near - 4, len(data))
+                if got and (b"moov" in got[1]) and at + near - 4 + got[0] >= len(data) - max(4096, len(data) // 50):
+                    return ("a motion photo: the picture passes its checks, and the short video stored after it "
+                            "runs unbroken to the end of the file (its frames themselves were not checked)")
+            if bytes(data[at:at + 2]) == b"\xff\xd8" and audit_jpeg(bytes(data[at:]))[0]:
+                return "holds a second picture after the first (as 3D photos do), which also passes its check"
+        except Exception:  # noqa: BLE001
+            pass
+        return plain
 
     def _other_partitions(self) -> None:
         """A card can hold more than one partition (cards from game consoles, dashcams, single-board

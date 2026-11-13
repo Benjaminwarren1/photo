@@ -760,3 +760,103 @@ def test_files_from_deleted_folders_keep_their_whole_path(tmp_path, zero_high):
     want = {"/".join("_" + part[1:] for part in path.split("/")):
             hashlib.sha256(pic).hexdigest() for path, pic in zip(paths, pics)}
     assert saved == want
+
+
+def _raw_file(seed: int, make: bytes = b"NIKON CORPORATION", order: str = ">") -> bytes:
+    """A camera RAW file in miniature: TIFF tables, a JPEG preview, and a block of sensor data."""
+    import struct
+    from photorecover.synth.photos import make_photo
+    preview = make_photo(seed, 320, 240, preview=False)
+    raw = np.random.default_rng(seed).integers(0, 256, 300_000, dtype=np.uint8).tobytes()
+    e = order
+    head = (b"MM\0*" if e == ">" else b"II*\0") + struct.pack(e + "I", 8)
+
+    def table(entries, nxt=0):
+        return struct.pack(e + "H", len(entries)) + b"".join(entries) + struct.pack(e + "I", nxt)
+
+    long = lambda tag, v: struct.pack(e + "HHII", tag, 4, 1, v)
+    make = make + b"\0"
+    at_make = 8 + 2 + 2 * 12 + 4
+    at_subs = at_make + len(make)
+    at_t1 = at_subs + 8
+    at_t2 = at_t1 + 2 + 2 * 12 + 4
+    at_prev = at_t2 + 2 + 3 * 12 + 4
+    at_raw = at_prev + len(preview)
+    ifd0 = table([struct.pack(e + "HHII", 271, 2, len(make), at_make), struct.pack(e + "HHII", 330, 4, 2, at_subs)])
+    t1 = table([long(513, at_prev), long(514, len(preview))])
+    t2 = table([long(259, 34713), long(273, at_raw), long(279, len(raw))])
+    return head + ifd0 + make + struct.pack(e + "II", at_t1, at_t2) + t1 + t2 + preview + raw
+
+
+def _mpo_file(seed: int) -> bytes:
+    """A 3D photo: two JPEGs in one file, with the index a camera writes into the first."""
+    import struct
+    from photorecover.synth.photos import make_photo
+    a, b = make_photo(seed, 640, 480, preview=False), make_photo(seed + 1, 640, 480, preview=False)
+    body = b"MPF\0II*\0" + struct.pack("<I", 8) + struct.pack("<H", 3) \
+        + struct.pack("<HHI4s", 0xB000, 7, 4, b"0100") + struct.pack("<HHII", 0xB001, 4, 1, 2) \
+        + struct.pack("<HHII", 0xB002, 7, 32, 50) + struct.pack("<I", 0)
+    seg_len = 2 + len(body) + 32
+    base = 2 + 4 + 4                                  # the index counts from the "II" of the first picture
+    first_len = len(a) + 2 + seg_len
+    entries = struct.pack("<IIIHH", 0x20030000, first_len, 0, 0, 0) \
+        + struct.pack("<IIIHH", 0x00020002, len(b), first_len - base, 0, 0)
+    return a[:2] + b"\xff\xe2" + struct.pack(">H", seg_len) + body + entries + a[2:] + b
+
+
+def test_camera_raw_files_and_3d_photos(tmp_path):
+    """RAW files are checked by their own tables and built-in previews, a 3D photo by each picture
+    in it, and a RAW file whose folder entry is gone is still found, whole, by scanning."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    b = FatBuilder(96, 32, 4096)
+    files = {"DCIM/100NIKON/DSC_0001.NEF": _raw_file(91), "DCIM/100NIKON/DSC_0002.CR2": _raw_file(92, b"Canon", "<"),
+             "DCIM/100NIKON/DSC_0003.MPO": _mpo_file(93), "DCIM/100NIKON/DSC_0004.JPG": make_photo(95, 800, 600)}
+    lost = {"LOST/DSC_0009.NEF": _raw_file(96)}
+    broken = bytearray(_raw_file(97))
+    broken[2000:2600] = bytes(600)                                    # inside the preview
+    for name, data in {**files, **lost, "DCIM/100NIKON/DSC_0005.NEF": bytes(broken)}.items():
+        b.mkdir(name.rpartition("/")[0])
+        b.write(name, data)
+    b.delete_all()
+    for c in b._dirs["LOST"].clusters:
+        off = b.cluster_off(c)
+        b.img[off:off + b.cl] = bytes(b.cl)
+    img = tmp_path / "card.img"
+    b.save(img)
+    rec = Recovery(img, tmp_path / "out")
+    rec.run()
+    assert not rec.summary["problems"], rec.summary["problems"]
+    saved = {(tmp_path / "out" / i.saved_as).read_bytes(): i for i in rec.items if i.saved_as}
+    for name, data in files.items():
+        assert data in saved, f"{name} did not come back"
+    assert saved[files["DCIM/100NIKON/DSC_0003.MPO"]].grade == "Verified"
+    nef = saved[files["DCIM/100NIKON/DSC_0001.NEF"]]
+    assert nef.grade == "Recovered, unverified" and "preview" in nef.note, (nef.grade, nef.note)
+    found = saved[lost["LOST/DSC_0009.NEF"]]
+    assert found.name.endswith(".nef") and found.source == "found by scanning", (found.name, found.source)
+    assert bytes(broken) not in saved or "looks damaged" in saved[bytes(broken)].note
+
+
+def test_motion_photo_says_its_video_is_whole(tmp_path):
+    """Phones store a short video after the picture, in the same .jpg. The picture is checked as
+    usual, and the report says whether the video behind it is whole."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    from photorecover.synth.videos import make_video
+    b = FatBuilder(64, 16, 4096)
+    good = make_photo(101, 800, 600) + make_video(102, frames=40, moov_first=True)
+    bad = bytearray(make_photo(103, 800, 600) + make_video(104, frames=40, moov_first=True))
+    start = bad.index(b"ftyp") - 4
+    first = int.from_bytes(bad[start:start + 4], "big")
+    bad[start + first:start + first + 8] = bytes(8)                  # the header of its second part
+    b.write("DCIM/MVIMG_0001.JPG", good)
+    b.write("DCIM/MVIMG_0002.JPG", bytes(bad))
+    b.delete_all()
+    img = tmp_path / "card.img"
+    b.save(img)
+    rec = Recovery(img, tmp_path / "out")
+    rec.run()
+    notes = {i.size: i.note for i in rec.items if i.saved_as}
+    assert "motion photo" in notes[len(good)], notes
+    assert "without checking" in notes[len(bad)], notes

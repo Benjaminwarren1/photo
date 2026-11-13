@@ -142,7 +142,7 @@ def _slot_ok(a: np.ndarray) -> np.ndarray:
 
 
 SURVEY_MAGIC = dict(jpg=(0, b"\xff\xd8\xff"), png=(0, b"\x89PNG"), mp4=(4, b"ftyp"), zip=(0, b"PK\x03\x04"),
-                    gif=(0, b"GIF8"))
+                    gif=(0, b"GIF8"), tif=(0, b"II*\0"), tifm=(0, b"MM\0*"))
 
 
 class Survey:
