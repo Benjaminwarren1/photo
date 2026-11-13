@@ -100,12 +100,33 @@ def new_drives(before: list[Drive], after: list[Drive]) -> list[Drive]:
 def drive_of_path(path: Path) -> str | None:
     """Which physical drive a folder lives on (Windows), so a clone is never saved onto the card."""
     if sys.platform != "win32":
-        return None
+        return _drive_of_path_unix(Path(path))
     letter = str(Path(path).resolve().drive).rstrip(":")
     if len(letter) != 1:
         return None
     n = _powershell(f"(Get-Partition -DriveLetter {letter}).DiskNumber").strip()
     return f"PhysicalDrive{n}" if n.isdigit() else None
+
+
+def _drive_of_path_unix(path: Path) -> str | None:
+    """The whole drive (sdb, mmcblk0, disk2) that holds a folder on Linux or macOS."""
+    import re
+    p = path
+    while not p.exists() and p.parent != p:
+        p = p.parent
+    try:
+        r = subprocess.run(["df", "-P", str(p)], capture_output=True, text=True, timeout=20)
+        dev = r.stdout.strip().splitlines()[-1].split()[0]
+    except (OSError, IndexError, subprocess.SubprocessError):
+        return None
+    if not dev.startswith("/dev/"):
+        return None
+    name = dev[5:]
+    for pattern in (r"^(disk\d+)s\d+$", r"^((?:mmcblk|nvme\d+n|loop)\d+)p\d+$", r"^([a-z]+)\d+$"):
+        m = re.match(pattern, name)
+        if m:
+            return m.group(1)
+    return name
 
 
 def free_space(folder: Path) -> int:
@@ -292,6 +313,13 @@ def clone(source: str, dest: Path, size: int | None = None, status_file: Path | 
         except (OSError, ValueError):
             resumed = None
     f = out = None
+    created = False                 # only a file this run created may ever be removed by it
+    try:
+        if os.path.exists(source) and dest.exists() and os.path.samefile(source, dest):
+            return note("error", error="same", message="The copy cannot be saved onto the very thing being copied. "
+                                                        "Choose a different place to save it.")
+    except OSError:
+        pass
     try:
         f = _open_source(source)
         total = _device_size(f, source, size)
@@ -301,8 +329,16 @@ def clone(source: str, dest: Path, size: int | None = None, status_file: Path | 
             bad = [tuple(x) for x in resumed["bad"]]
             in_order = False
             out = open(dest, "r+b")
+        elif dest.exists() and dest.stat().st_size:
+            # Never empty a file that is already there: it may be hours of reading a failing card.
+            return note("error", error="exists",
+                        message=("An unfinished copy of a different card (or of this card when it reported a "
+                                 "different size) is already saved under this name. " if resumed else
+                                 "A file with this name is already there. ")
+                        + "Choose another name or folder, or move that file away first.")
         else:
             out = open(dest, "wb")
+            created = True
         fpos = -1
 
         def read_at(o: int, n: int) -> bytes:
@@ -450,9 +486,12 @@ def clone(source: str, dest: Path, size: int | None = None, status_file: Path | 
                                 "start the copy again and it carries on from where it stopped.")
         return note("error", error="permission", message="Reading the card needs administrator rights.")
     except OSError as e:
-        if not done:
+        if not done and created:
             Path(dest).unlink(missing_ok=True)
-        return note("error", error="io", message=f"Could not read the card: {e}")
+        return note("error", error="io", resumable=bool(resumed),
+                    message=f"Could not read the card: {e}" + (
+                        ". The part already copied is kept; put the card back in and start the copy again."
+                        if resumed else ""))
     finally:
         for h in (f, out):
             try:

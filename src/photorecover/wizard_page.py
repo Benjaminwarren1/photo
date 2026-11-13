@@ -102,7 +102,7 @@ const views={
   <div class="actions"><button onclick="pickPiece(${r.index},null)">None of these look right</button><button onclick="go(null)">Stop for now</button></div>
   <p class="soft">${r.left} left to decide.</p>`;},
  error(){steps(0);return `<h1>That didn't work</h1><p>${esc(S.message)}</p><p class="soft">Your card has not been changed.</p>
-  <div class="actions"><button class="go" onclick="api('restart')">Start again</button></div>`;}
+  <div class="actions">${S.can_resume?`<button class="go" onclick="api('resume_clone')">Carry on with the copy</button><button onclick="api('restart')">Start again from the beginning</button>`:`<button class="go" onclick="api('restart')">Start again</button>`}</div>`;}
 };
 let local=null, R=null, imgPath="";
 async function review(){const j=await api("review_next"); R=j.review; local=R?"review":null; render();}

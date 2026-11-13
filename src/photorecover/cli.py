@@ -95,6 +95,12 @@ def main(argv=None) -> int:
                 known = device.Drive(f"PhysicalDrive{want[13:]}", rf"\\.\PhysicalDrive{want[13:]}", a.size or 0, "", True, False)
         if known is not None:
             a.source, a.size = known.path, a.size or known.size
+        try:
+            same = os.path.exists(a.source) and os.path.exists(a.dest) and os.path.samefile(a.source, a.dest)
+        except OSError:
+            same = False
+        if same or (known is not None and device.drive_of_path(Path(a.dest).parent) == known.id):
+            return stop("The copy cannot be saved onto the card or file being copied. Choose a different place.", "same")
         why = device.dest_problem(Path(a.dest).parent, a.size)
         if why:
             return stop(why, "space")

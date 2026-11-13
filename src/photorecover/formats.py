@@ -226,7 +226,10 @@ def mpo_parts(data) -> list[tuple[int, int]] | None:
 
 def check_mpo(data, audit) -> tuple[str, str] | None:
     """A 3D photo is whole when each picture in it passes the same final check as any photo."""
-    parts = mpo_parts(data)
+    try:
+        parts = mpo_parts(data)
+    except (struct.error, IndexError, ValueError):
+        parts = None                      # a damaged list of pictures: said below, never fatal
     if not parts:
         return "unverified", "its list of pictures could not be read; open it to make sure"
     for n, (o, ln) in enumerate(parts, 1):

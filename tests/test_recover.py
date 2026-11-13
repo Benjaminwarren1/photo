@@ -141,8 +141,56 @@ def test_exfat_fragmented_video_follows_surviving_chain(tmp_path):
     b.delete_all()
     rec = run(tmp_path, b)
     it = next(i for i in rec.items if i.name == "CLIP.MP4")
-    assert it.grade == "Verified"
+    # this clip has no frame index to check against, so following the card's own record of where it
+    # lay brings it back whole, but it is not called verified on its outer structure alone
+    assert it.grade == "Recovered, unverified" and "could not be checked" in it.note, (it.grade, it.note)
     assert (tmp_path / "out" / it.saved_as).read_bytes() == video
+
+
+def test_exfat_video_with_a_real_index_is_frame_checked_and_an_overwritten_one_is_not_passed(tmp_path):
+    """On exFAT the card still records where a deleted video lay. That is not proof its contents
+    survive: the frames are checked, and a clip whose data was overwritten is not called verified."""
+    from photorecover.synth.exfatbuilder import ExFatBuilder
+    from photorecover.synth.videos import make_video
+    b = ExFatBuilder(64, 32768)
+    good, hurt = make_video(121, frames=90, moov_first=True), make_video(122, frames=90, moov_first=True)
+    b.write("DCIM/GOOD.MP4", good)
+    t = b.write("DCIM/HURT.MP4", hurt)
+    b.delete_all()
+    mid = b.cluster_off(t.clusters[len(t.clusters) // 2])
+    b.img[mid:mid + b.cl] = np.random.default_rng(5).integers(0, 256, b.cl, dtype=np.uint8).tobytes()
+    rec = run(tmp_path, b)
+    by = {i.name: i for i in rec.items}
+    assert by["GOOD.MP4"].grade == "Verified" and "checkpoints" in by["GOOD.MP4"].note
+    assert (tmp_path / "out" / by["GOOD.MP4"].saved_as).read_bytes() == good
+    assert by["HURT.MP4"].grade != "Verified", by["HURT.MP4"].note
+
+
+def test_gif_and_png_are_checked_by_their_contents(tmp_path):
+    """A GIF used to pass on its last byte alone, and a PNG on its outline. A file with its middle
+    replaced must not be saved as good."""
+    import io
+    from PIL import Image
+    from photorecover.synth.fatbuilder import FatBuilder
+    rng = np.random.default_rng(6)
+    pix = rng.integers(0, 256, (240, 320, 3), dtype=np.uint8)
+    files = {}
+    for kind in ("GIF", "PNG"):
+        buf = io.BytesIO()
+        Image.fromarray(pix).save(buf, kind)
+        files[kind] = buf.getvalue()
+    b = FatBuilder(64, 16, 4096)
+    for kind, data in files.items():
+        bad = bytearray(data)
+        bad[len(bad) // 2:len(bad) // 2 + 2048] = rng.integers(0, 256, 2048, dtype=np.uint8).tobytes()
+        b.write(f"PICS/GOOD.{kind}", data)
+        b.write(f"PICS/BAD.{kind}", bytes(bad))
+    b.delete_all()
+    rec = run(tmp_path, b)
+    by = {i.name: i for i in rec.items}
+    assert by["_OOD.PNG"].grade == "Verified" and by["_OOD.GIF"].grade == "Recovered, unverified"
+    assert by["_AD.PNG"].grade == "Not recoverable" and by["_AD.GIF"].grade == "Not recoverable", \
+        (by["_AD.PNG"].grade, by["_AD.GIF"].grade)
 
 
 @pytest.mark.parametrize("moov_first", [False, True])
@@ -900,3 +948,31 @@ def test_recording_the_camera_never_finished_is_kept_and_explained(tmp_path):
     assert data[:len(cut)] == bytes(cut) and len(data) - len(cut) < 4096
     assert (tmp_path / "out" / clips[1].saved_as).read_bytes() == no_index, "saved more or less than the clip says it has"
     assert sum(i.grade == "Verified" for i in rec.items) == 3
+
+
+def test_one_malformed_file_never_stops_the_run(tmp_path, monkeypatch):
+    """A 3D photo whose list of pictures is cut short, and a file whose check blows up outright:
+    each is noted, everything else is still recovered, and the report is still written."""
+    from photorecover import recover as rmod
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    good = make_photo(131, 800, 600)
+    mpo = bytearray(_mpo_file(132))
+    at = mpo.index(b"MPF\0")
+    mpo[at + 8:at + 12] = (0x7FFFFFF0).to_bytes(4, "little")       # the list now points far outside the file
+    b = FatBuilder(64, 16, 4096)
+    b.write("DCIM/GOOD.JPG", good)
+    b.write("DCIM/ODD.MPO", bytes(mpo))
+    b.write("DCIM/BOOM.GIF", b"GIF89a" + bytes(range(1, 251)) * 20)
+    b.delete_all()
+    real = rmod.check_other
+    monkeypatch.setattr(rmod, "check_other", lambda ext, data: 1 / 0 if ext == "gif" else real(ext, data))
+    img = tmp_path / "card.img"
+    b.save(img)
+    rec = Recovery(img, tmp_path / "out")
+    rec.run()
+    by = {i.name: i for i in rec.items}
+    assert by["_OOD.JPG"].grade == "Verified"
+    assert by["_DD.MPO"].grade != "Verified"
+    assert "unexpected problem" in by["_OOM.GIF"].note and any("ZeroDivisionError" in p for p in rec.summary["problems"])
+    assert (tmp_path / "out" / "report.html").exists()

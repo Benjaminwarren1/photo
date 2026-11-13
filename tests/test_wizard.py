@@ -189,3 +189,35 @@ def test_progress_file_held_open_by_another_program_does_not_stop_the_copy(tmp_p
     info = device.clone(str(src), tmp_path / "copy.img", status_file=tmp_path / "status.json")
     assert info["state"] == "done", info
     assert (tmp_path / "copy.img").read_bytes() == src.read_bytes()
+
+
+def test_copy_never_empties_a_file_that_is_already_there(tmp_path):
+    """Three ways a copy could destroy data: starting again while the card is unplugged, saving
+    onto the thing being copied, and reusing the name of an unfinished copy of another card."""
+    import json
+    import os
+    from photorecover import device
+    src = tmp_path / "card.bin"
+    src.write_bytes(os.urandom(2 << 20))
+    part = tmp_path / "copy" / "card.img"
+    part.parent.mkdir()
+    part.write_bytes(src.read_bytes()[:1 << 20])
+    progress = dict(source=str(tmp_path / "unplugged.bin"), total=2 << 20, done=1 << 20, later=[], bad=[])
+    (tmp_path / "copy" / "card.img.map.json").write_text(json.dumps(progress))
+    # the card is not there: the part already copied must survive
+    info = device.clone(str(tmp_path / "unplugged.bin"), part)
+    assert info["state"] == "error" and part.stat().st_size == 1 << 20
+    # an unfinished copy of a different card is saved under this name: it must survive too
+    info = device.clone(str(src), part)
+    assert info["state"] == "error" and info["error"] == "exists" and part.stat().st_size == 1 << 20
+    # onto itself
+    before = src.read_bytes()
+    info = device.clone(str(src), src)
+    assert info["state"] == "error" and src.read_bytes() == before
+    from photorecover import cli
+    assert cli.main(["clone", str(src), str(src)]) == 1 and src.read_bytes() == before
+    # and the same card, back in, carries on
+    progress["source"] = str(src)
+    (tmp_path / "copy" / "card.img.map.json").write_text(json.dumps(progress))
+    info = device.clone(str(src), part)
+    assert info["state"] == "done" and part.read_bytes() == before

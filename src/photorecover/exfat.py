@@ -212,6 +212,7 @@ class ExFatVolume:
                 ents, _ = self._parse(self.cluster(c), c)
                 for e in ents:
                     e.path = path
+                    e.in_tree = True          # listed in a folder the card still reaches from its top
                     sub = (path + "/" if path else "") + e.name
                     if e.is_dir:
                         dir_path.setdefault(e.start, sub)

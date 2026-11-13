@@ -145,6 +145,15 @@ class Session:
         elif info.get("state") in ("error", "cancelled"):
             self.step = "error"
             self.message = info.get("message") or "Copying the card was cancelled."
+            self.can_resume = bool(info.get("resumable"))
+
+    def resume_clone(self):
+        """Carry on a copy that was interrupted, into the same file, from where it stopped."""
+        if not (self.drive and self.image and self.status_file):
+            return
+        self.can_resume = False
+        device.start_clone(self.drive, self.image, self.status_file)
+        self.step, self.message = "cloning", ""
 
     def _recover(self):
         self.step, self.log, self.message = "recovering", [], ""
@@ -169,7 +178,7 @@ class Session:
             if self.step == "cloning":
                 self.poll_clone()
             s = dict(step=self.step, message=self.message, version=__version__, folder=str(self.folder),
-                     windows=sys.platform == "win32",
+                     windows=sys.platform == "win32", can_resume=bool(getattr(self, "can_resume", False)),
                      found=[device.drive_dict(d) for d in self.found],
                      drive=device.drive_dict(self.drive) if self.drive else None)
             if self.step == "confirm" and self.drive:
@@ -256,6 +265,8 @@ def make_server(session: Session, token: str, port: int = 0) -> ThreadingHTTPSer
                         session.folder = Path(str(body.get("folder") or session.folder))
                     elif a == "start_clone":
                         session.start_clone(body.get("folder"))
+                    elif a == "resume_clone":
+                        session.resume_clone()
                     elif a == "use_image":
                         session.use_image(str(body.get("path", "")))
                     elif a == "review_pick":

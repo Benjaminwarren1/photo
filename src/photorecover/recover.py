@@ -149,6 +149,35 @@ def _valid_png(data) -> bool:
     return False
 
 
+def _gif_lines_up(data) -> bool:
+    """Walk a GIF block by block to its end mark. Every block states its own length, so a file
+    that was cut, or had its middle replaced, almost never walks through."""
+    n = len(data)
+    if n < 14 or bytes(data[:4]) != b"GIF8":
+        return False
+    p = 13 + (3 << ((data[10] & 7) + 1) if data[10] & 0x80 else 0)
+
+    def sub_blocks(p: int) -> int:
+        while p < n and data[p]:
+            p += 1 + data[p]
+        return p + 1
+
+    while p < n:
+        kind = data[p]
+        if kind == 0x3B:
+            return True
+        if kind == 0x21:
+            p = sub_blocks(p + 2)
+        elif kind == 0x2C:
+            if p + 10 > n:
+                return False
+            flags = data[p + 9]
+            p = sub_blocks(p + 10 + (3 << ((flags & 7) + 1) if flags & 0x80 else 0) + 1)
+        else:
+            return False
+    return False
+
+
 def png_length(buf, pos: int, end: int) -> int | None:
     """Length of the PNG that starts at pos, if every one of its parts passes its own checksum."""
     import zlib
@@ -218,11 +247,21 @@ def check_other(ext: str, data):
     if ext == "mpo":
         return formats.check_mpo(data, audit_jpeg)
     if ext == "png":
-        return "verified" if _valid_png(data) else None
+        return "verified" if png_length(data, 0, len(data)) == len(data) else None
     if ext in ("mp4", "mov", "3gp", "m4v", "heic", "cr3"):
-        return "verified" if _valid_isobmff(data) else "unverified"
+        # Its outer parts lining up proves the file is all there, not that what is inside them
+        # is still this video: only the frame-by-frame check can say that.
+        lined_up = ("its parts line up from start to end, but its contents could not be checked; "
+                    "play it through to make sure")
+        if _valid_isobmff(data):
+            return "unverified", lined_up
+        got = boxes_length(data, 0, len(data))
+        if got and got[0] >= 0.98 * len(data) and b"mdat" in got[1] and ({b"moov", b"moof", b"meta"} & got[1]):
+            return "unverified", lined_up
+        return None
     if ext == "gif":
-        return "verified" if data[-1:] == b";" else "unverified"
+        return ("unverified", "its parts line up from start to end; this file type carries no further check") \
+            if _gif_lines_up(data) else None
     return "unverified"
 
 
@@ -583,7 +622,8 @@ class Recovery:
 
         # Videos: every frame and audio packet listed in the video's index is a checkpoint.
         vr = VideoRebuilder(vol, avail)
-        videos = [i for i in others if i.name.rpartition(".")[2].lower() in CONTAINERS and not i._hint]
+        videos = [i for i in others if i.name.rpartition(".")[2].lower() in CONTAINERS]
+        rejected: set[int] = set()         # videos the frame check has ruled on: no second chance as "other"
         if videos:
             self.log(f"Checking {len(videos)} videos")
         for k, it in enumerate(videos):
@@ -592,12 +632,15 @@ class Recovery:
             if v is None:
                 continue
             if v.status == "failed":
-                it.note = v.reason
+                # no index could be read. If the card records which clusters the file had (exFAT),
+                # or the file lies whole in one run, the pass below may still save it, unverified.
+                it._video_why = v.reason
                 continue
             if v.status == "complete" and not _valid_isobmff(vr.read(v, it.size)):
                 # every checkpoint matched, but the file does not end where this entry says:
                 # the space now belongs to a different, later video
                 it.note = "its space was reused by a later file"
+                rejected.add(id(it))
                 continue
             it.chain = v.chain
             it.percent = round(100.0 * (len(v.chain) - v.missing) / max(1, len(v.chain)), 1)
@@ -614,7 +657,7 @@ class Recovery:
                 claim(real)
             else:
                 it.grade, it.note = GRADE_PARTIAL, v.reason + "; the gaps are left blank and will show as glitches"
-        done_videos = {id(i) for i in videos if i.chain}
+        done_videos = {id(i) for i in videos if i.chain} | rejected
 
         # Other file types that are whole.
         for it in others:
@@ -637,12 +680,18 @@ class Recovery:
                     it.name += ".png"
                 ext = "png"
             # only kinds that can be checked need reading through; the rest are saved as they are
-            verdict = check_other(ext, vol.read_chain(chain, it.size)) if ext in SIGNATURES else "unverified"
+            verdict = "unverified"
+            if ext in SIGNATURES:
+                verdict = attempt(it, lambda: check_other(ext, vol.read_chain(chain, it.size)) or "gone")
+                if verdict is None:          # the check itself failed on this file: noted, and the run goes on
+                    continue
+                verdict = None if verdict == "gone" else verdict
             why = "this file type cannot be checked; open it to make sure"
             if isinstance(verdict, tuple):
                 verdict, why = verdict
             if verdict is None:
-                it.note = "its space no longer holds this kind of file (overwritten, or stored in pieces)"
+                it.note = getattr(it, "_video_why", "") or \
+                    "its space no longer holds this kind of file (overwritten, or stored in pieces)"
                 continue
             it.chain, it.percent = chain, 100.0
             it.grade = GRADE_UNVERIFIED
@@ -1123,7 +1172,11 @@ class Recovery:
         Returns the photo's new grade."""
         it = self.items[index]
         if getattr(it, "_owner", self) is not self:
-            return it._owner.review_pick(it._owner.items.index(it), cluster)
+            grade = it._owner.review_pick(it._owner.items.index(it), cluster)
+            self.summary["counts"] = self._counts()
+            if self.out:
+                self._write_report()
+            return grade
         r: Result = it._last
         if cluster is None:
             it.grade, it.candidates = GRADE_PARTIAL, []
@@ -1151,7 +1204,7 @@ class Recovery:
                 it.grade = GRADE_REVIEW if (r2.status == "review" and r2.candidates) else GRADE_PARTIAL
                 self._deliver_item(it)
         self.summary["counts"] = self._counts()
-        if self.out:
+        if self.out and self._only is None and not self._part:
             self._write_report()
         return it.grade
 
@@ -1237,8 +1290,8 @@ class Recovery:
                 if not hit.isdisjoint(it.chain):
                     it.note = (it.note + "; " if it.note else "") + \
                         "part of this file was in an area of the card that could not be read, and is blank there"
-                    if it.kind != "jpeg" and it.grade in (GRADE_VERIFIED, GRADE_UNVERIFIED):
-                        it.grade = GRADE_PARTIAL
+                    if it.grade in (GRADE_VERIFIED, GRADE_NO_PREVIEW, GRADE_UNVERIFIED):
+                        it.grade = GRADE_PARTIAL        # bytes known to be missing: never "recovered"
                     if it.kind == "jpeg" and it.percent < 100.0 and it.size and \
                             not hit.isdisjoint(range(it.start, it.start + -(-it.size // vol.cl))):
                         it._whole = runs_through(it)
@@ -1246,7 +1299,14 @@ class Recovery:
             self.log(f"Checking every recovered file once more and saving {len(todo)} files")
         for k, (it, verdict) in enumerate(_ahead(todo, self._audit, _workers())):
             self.progress = (k, len(todo))
-            self._deliver_item(it, verdict)
+            try:
+                self._deliver_item(it, verdict)
+            except Exception as e:  # noqa: BLE001
+                self.problems.append(f"{it.name}: could not be saved ({type(e).__name__}: {e})")
+                it.note = (it.note + "; " if it.note else "") + "this file could not be written to the output folder"
+                it.saved_as = ""
+                if it.grade != GRADE_LOST:
+                    it.grade = GRADE_REVIEW
 
     def _data(self, it: Item) -> bytes:
         vol = self.vol
