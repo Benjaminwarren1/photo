@@ -34,6 +34,7 @@ table{border-collapse:collapse;width:100%;margin-top:.8rem}td{padding:.4rem .2re
 img.prev{max-width:10rem;border-radius:.4rem;border:1px solid var(--line);display:block;margin:.5rem 0}
 td.n{font-variant-numeric:tabular-nums;font-weight:700;width:4.5rem;font-size:1.2rem}
 .why{font-size:.9rem;line-height:1.4;margin-top:.1rem}.lead{font-size:1.15rem;margin:.2rem 0 .4rem}
+details{margin:.6rem 0}summary{cursor:pointer}
 label.pick{display:flex;gap:.6rem;align-items:center;padding:.5rem .2rem}
 </style></head><body><main>
 <header><b>Photo recovery</b><span id="ver"></span></header>
@@ -69,9 +70,11 @@ const views={
   const sp=S.space, f=folderEdit??S.folder;
   return `<h1>${many?"Which one is your card?":"Is this your card?"}</h1>
   ${many?`<p>More than one new drive appeared.</p>${list}`:`<p><b>${esc(S.drive?S.drive.label:"")}</b></p>`}
-  <p style="margin-top:1rem">The copy and your recovered photos will be saved here:</p>
-  <div class="row"><input type="text" id="folder" value="${esc(f)}" aria-label="Folder to save into" oninput="folderEdit=this.value"><button onclick="pick('folder')">Choose…</button></div>
-  ${sp?`<p class="soft">Needs about ${size(sp.need)}. ${size(sp.free)} is free there.${sp.ok?"":" <b>That is not enough.</b> Choose another drive, such as an external one."}</p>`:""}
+  <p style="margin-top:1rem">A copy of the card and your recovered photos will be saved in a new folder${S.beside?" next to this program":""}. You do not need to do anything.</p>
+  <details${sp&&!sp.ok?" open":""}><summary class="soft">Save somewhere else</summary>
+  <div class="row"><input type="text" id="folder" value="${esc(f)}" aria-label="Folder to save into" oninput="folderEdit=this.value"><button onclick="pick('folder')">Choose…</button></div></details>
+  ${sp?(sp.ok?`<p class="soft">The copy needs ${size(sp.need)}; ${size(sp.free)} is free.${sp.tight?" That is enough for the copy. If a great deal is recovered it could still run short, and the program will say so if it does.":""}</p>`
+   :`<p class="note"><b>There is not enough room.</b> The copy needs ${size(sp.need)} and only ${size(sp.free)} is free. Open "Save somewhere else" and choose another drive, such as an external one.</p>`):""}
   ${S.windows?`<p class="soft">Windows will ask for permission to read the card. Choose Yes.</p>`:""}
   ${err()}<div class="actions"><button class="go" ${S.drive?"":"disabled"} onclick="api('start_clone',{folder:document.getElementById('folder').value})">Yes, copy this card</button>
   <button onclick="api('restart')">No, start again</button></div>`;},

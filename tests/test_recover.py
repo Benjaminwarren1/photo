@@ -807,11 +807,15 @@ def test_files_from_deleted_folders_keep_their_whole_path(tmp_path, zero_high):
     b.save(img)
     rec = Recovery(img, tmp_path / "out")
     rec.run()
-    saved = {str(p.relative_to(tmp_path / "out" / FOLDER_OK)).replace("\\", "/"): hashlib.sha256(p.read_bytes()).hexdigest()
-             for p in (tmp_path / "out" / FOLDER_OK).rglob("*") if p.is_file()}
+    # the report keeps each file's whole path; the saved files are sorted by kind, not by folder,
+    # and equal names are told apart
+    where = {(i.folder + "/" + i.name): hashlib.sha256((tmp_path / "out" / i.saved_as).read_bytes()).hexdigest()
+             for i in rec.items if i.saved_as}
     want = {"/".join("_" + part[1:] for part in path.split("/")):
             hashlib.sha256(pic).hexdigest() for path, pic in zip(paths, pics)}
-    assert saved == want
+    assert where == want
+    assert {i.saved_as for i in rec.items if i.saved_as} == {
+        f"{FOLDER_OK}/Photos/_MG_0001{n}.JPG" for n in ("", " (2)", " (3)", " (4)")}
 
 
 def _raw_file(seed: int, make: bytes = b"NIKON CORPORATION", order: str = ">") -> bytes:
@@ -1089,3 +1093,27 @@ def test_stream_video_whose_count_jumps_is_kept_with_the_doubt_said(tmp_path):
     (it,) = [i for i in rec.items if i.saved_as]
     assert it.grade == "Recovered, unverified" and "jumps about 50%" in it.note, (it.grade, it.note)
     assert (tmp_path / "out" / it.saved_as).read_bytes() == spliced
+
+
+def test_results_are_sorted_by_kind_and_small_pictures_kept_apart(tmp_path):
+    """Photos, videos, documents and music each get a folder; the card's own folders are not
+    rebuilt; and thumbnails and app pictures do not bury the photos."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    from photorecover.synth.videos import make_video
+    b = FatBuilder(64, 16, 4096)
+    b.mkdir("DCIM/100CAM")
+    b.mkdir("Android/data/gamefeed")
+    b.write("DCIM/100CAM/IMG_1.JPG", make_photo(301, 1024, 768))
+    b.write("Android/data/gamefeed/ICON.JPG", make_photo(302, 320, 240))
+    b.write("DCIM/100CAM/CLIP.MP4", make_video(303, frames=40))
+    b.write("NOTES.PDF", b"%PDF-1.4\n" + bytes(range(1, 200)) * 40)
+    b.write("SONG.MP3", b"ID3" + bytes(range(1, 200)) * 60)
+    b.write("Android/data/gamefeed/CACHE.DAT", bytes(range(1, 200)) * 30)
+    b.delete_all()
+    rec = run(tmp_path, b)
+    got = sorted(i.saved_as for i in rec.items if i.saved_as)
+    assert got == sorted(f"{FOLDER_OK}/{x}" for x in (
+        "Photos/_MG_1.JPG", "Small pictures (thumbnails and app images)/_CON.JPG", "Videos/_LIP.MP4",
+        "Documents/_OTES.PDF", "Music and sound/_ONG.MP3", "Other files/_ACHE.DAT")), got
+    assert {i.folder for i in rec.items} >= {"DCIM/100CAM", "Android/data/gamefeed"}

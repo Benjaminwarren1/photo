@@ -8,6 +8,15 @@ fragmented JPEG photos and MP4/MOV/3GP videos, and has a step-by-step wizard. A 
 read the way it was laid out before, and a drive in a format it cannot read (NTFS, Mac, Linux, or damaged)
 is searched directly for photos. Still to come: optional AI help.
 
+## What it is for, and what it is not
+
+It rescues files: your photos and videos first, and other whole files it comes across. Results are sorted
+into folders by kind (Photos, Videos, Documents, Music and sound, Other files), with thumbnails and pictures
+that apps keep for themselves set apart so they do not bury the real photos.
+
+It does not put a card back the way it was. The folders the card used to have are not rebuilt, and nothing
+is ever written to the card itself. The report lists where each file used to be, for anyone who needs that.
+
 ## Why it is different
 
 Most recovery tools assume every deleted file sat in one unbroken run on the card. Fragmented photos then
