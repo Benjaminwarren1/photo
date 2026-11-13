@@ -32,7 +32,8 @@ SIGNATURES = {            # extension -> bytes a file of that type starts with (
     "heic": (4, b"ftyp"), "avi": (0, b"RIFF"), "wav": (0, b"RIFF"), "pdf": (0, b"%PDF"),
     "zip": (0, b"PK"), "mp3": (0, None),
     **{ext: (0, None) for ext in ("nef", "nrw", "cr2", "arw", "sr2", "srf", "pef", "dng", "tif", "tiff", "3fr",
-                                  "erf", "kdc", "dcr", "iiq")},     # camera RAW built on TIFF: see formats.py
+                                  "erf", "kdc", "dcr", "iiq", "orf", "rw2")},
+    "cr3": (4, b"ftyp"), "raf": (0, b"FUJIFILMCCD-RAW"),     # camera RAW built on TIFF: see formats.py
     "mpo": (0, b"\xff\xd8\xff"),       # a 3D photo: two JPEGs in one file
 }
 BOX_TYPES = {b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide", b"uuid", b"meta", b"udta", b"pnot", b"moof",
@@ -191,7 +192,7 @@ def check_other(ext: str, data):
         return formats.check_mpo(data, audit_jpeg)
     if ext == "png":
         return "verified" if _valid_png(data) else None
-    if ext in ("mp4", "mov", "3gp", "m4v", "heic"):
+    if ext in ("mp4", "mov", "3gp", "m4v", "heic", "cr3"):
         return "verified" if _valid_isobmff(data) else "unverified"
     if ext == "gif":
         return "verified" if data[-1:] == b";" else "unverified"
@@ -796,7 +797,11 @@ class Recovery:
             chain = list(range(c, c + -(-size // cl)))
             if not avail[chain].all():
                 return
-            if b"moov" in seen or b"moof" in seen:
+            if brand == b"crx ":                      # Canon's newer RAW: built like a video file
+                if b"mdat" in seen:
+                    found_other(c, "raw", "cr3", size, chain, GRADE_UNVERIFIED,
+                                "its parts line up from start to end; the raw sensor data itself carries no check")
+            elif b"moov" in seen or b"moof" in seen:
                 ext = "mov" if brand == b"qt  " else "3gp" if brand[:2] == b"3g" else "m4a" if brand[:3] == b"M4A" else "mp4"
                 v = vr.rebuild(c, size) if b"moov" in seen else None
                 if v is not None and v.status == "complete" and not v.uncertain_joins and \

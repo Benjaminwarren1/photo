@@ -11,7 +11,7 @@ import io
 import struct
 
 _SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4}
-RAW_EXT = {"nef", "nrw", "cr2", "arw", "sr2", "srf", "pef", "dng", "tif", "tiff", "3fr", "erf", "kdc", "dcr", "iiq"}
+RAW_EXT = {"orf", "rw2", "nef", "nrw", "cr2", "arw", "sr2", "srf", "pef", "dng", "tif", "tiff", "3fr", "erf", "kdc", "dcr", "iiq"}
 _SUB_TABLES = (330, 34665, 34853)        # SubIFDs, Exif, GPS
 
 
@@ -22,9 +22,10 @@ class Tiff:
         self.buf, self.pos = buf, pos
         self.end = len(buf) if end is None else end
         head = bytes(buf[pos:pos + 8])
-        if head[:4] == b"II*\0":
+        # 42 marks plain TIFF; Olympus (ORF) and Panasonic (RW2) use the same layout under other numbers
+        if head[:4] in (b"II*\0", b"IIRO", b"IIRS", b"IIU\0"):
             self.e = "<"
-        elif head[:4] == b"MM\0*":
+        elif head[:4] in (b"MM\0*", b"MMOR"):
             self.e = ">"
         else:
             raise ValueError("not a TIFF")
@@ -129,6 +130,11 @@ class Tiff:
     def ext(self) -> str:
         head = bytes(self.buf[self.pos + 8:self.pos + 10])
         make = self.make.upper()
+        first = bytes(self.buf[self.pos:self.pos + 4])
+        if first in (b"IIRO", b"IIRS", b"MMOR"):
+            return "orf"
+        if first == b"IIU\0":
+            return "rw2"
         if self.dng:
             return "dng"
         if head == b"CR":
@@ -161,8 +167,10 @@ def check_tiff(data, size: int | None = None, audit=None) -> tuple[str, str] | N
         t = Tiff(data, 0, len(data))
     except (ValueError, struct.error):
         return None
-    if not t.ok or not t.blocks:
-        return None
+    if not t.ok:
+        # this reading of the tables has not been proved on every camera, so a file is never
+        # thrown away on it: it is kept, and the doubt is said
+        return "unverified", "its internal layout does not add up, so it may be damaged; open it to check"
     opened = 0
     for o, ln in t.jpegs:
         part = bytes(data[o:o + ln])
