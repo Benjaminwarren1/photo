@@ -184,24 +184,28 @@ def boxes_length(buf, pos: int, end: int) -> tuple[int, set, bytes] | None:
     return (p - pos, seen, brand) if len(seen) >= 2 else None
 
 
-def unfinished_video(buf, pos: int, end: int) -> bool:
-    """Does a video start at pos whose picture data begins but whose index never follows?"""
+def unfinished_video(buf, pos: int, end: int) -> int | None:
+    """For a video that starts at pos and whose picture data begins but whose index does not follow:
+    the length its picture data says the file has up to the index, or 0 when that was never filled
+    in (the recording was cut off). None when no such video starts here."""
     if bytes(buf[pos + 4:pos + 8]) != b"ftyp":
-        return False
+        return None
     (size,) = struct.unpack_from(">I", buf, pos)
     if not 8 <= size <= 1024:
-        return False
+        return None
     p = pos + size
     for _ in range(4):
-        if p + 8 > end:
-            return False
+        if p + 16 > end:
+            return None
         size, typ = struct.unpack_from(">I4s", buf, p)
         if typ == b"mdat":
-            return True
+            if size == 1:
+                (size,) = struct.unpack_from(">Q", buf, p + 8)
+            return p - pos + size if 16 <= size <= end - p else 0
         if typ not in (b"free", b"wide", b"skip", b"uuid") or not 8 <= size <= 1 << 20:
-            return False
+            return None
         p += size
-    return False
+    return None
 
 
 def check_other(ext: str, data):
@@ -818,18 +822,31 @@ class Recovery:
                 # A recording the camera never finished (battery died, card pulled out): the video
                 # data is there but the index that players need was never written. Keep the data
                 # in one run, up to the first blank or foreign cluster, and say what it is.
-                if unfinished_video(vol.m, pos, data_end):
+                want = unfinished_video(vol.m, pos, data_end)
+                if want is not None:
+                    limit = c + (-(-want // cl) if want else (64 << 30) // cl)
                     k = c + 1
-                    while k <= vol.max_cluster and avail[k] and not blank[k] and k - c < (64 << 30) // cl and \
+                    while k <= vol.max_cluster and k < limit and avail[k] and not blank[k] and \
                             bytes(vol.cluster(k)[:3]) != b"\xff\xd8\xff" and bytes(vol.cluster(k)[4:8]) != b"ftyp":
                         k += 1
-                    if (k - c) * cl >= 256 << 10:
+                    have = min(want, (k - c) * cl) if want else (k - c) * cl
+                    if have >= 256 << 10:
                         brand = bytes(vol.m[pos + 8:pos + 12])
-                        found_other(c, "video", "mov" if brand == b"qt  " else "mp4", (k - c) * cl, list(range(c, k)),
-                                    GRADE_PARTIAL,
-                                    "a recording the camera never finished writing: its video data is here, but the "
-                                    "index that players need was never saved, so it will not play as it is. A video "
-                                    "repair tool can usually rebuild it using another clip from the same camera")
+                        ext = "mov" if brand == b"qt  " else "mp4"
+                        fix = ("A video repair tool can often rebuild it using another clip from the same camera")
+                        if not want:
+                            found_other(c, "video", ext, have, list(range(c, k)), GRADE_PARTIAL,
+                                        "a recording that was cut off before the camera finished writing it: its video "
+                                        "data is here, but the index that players need was never saved, so it will "
+                                        "not play as it is. " + fix)
+                        else:
+                            found_other(c, "video", ext, have, list(range(c, k)), GRADE_PARTIAL,
+                                        ("the video data of a clip whose index (the part players need) is no longer "
+                                         "on the card" if have == want else
+                                         "the first part of a clip's video data; the rest, and the index players "
+                                         "need, are no longer where they should be (overwritten, or stored elsewhere "
+                                         "on the card)") + ", so it will not play as it is. " + fix,
+                                        percent=round(100.0 * have / want, 1) if have < want else 100.0)
                 return
             size, seen, brand = got
             chain = list(range(c, c + -(-size // cl)))
@@ -1181,6 +1198,22 @@ class Recovery:
         if self.blank_ranges:
             # which clusters of this layout touch a part of the card that could not be read
             vol, hit = self.vol, set()
+            def runs_through(it) -> bool:
+                """Does this photo's own ending sit exactly where its recorded size says, counting
+                straight on from its start? (The ending is the end marker, or the block of notes some
+                phone cameras add after it, which states its own length.)"""
+                n = -(-it.size // vol.cl)
+                if it.kind != "jpeg" or not it.chain or it.size < 16 or it.start + n - 1 > vol.max_cluster:
+                    return False
+                last = bytes(vol.read_run(it.start, it.size)[-12:])
+                if last[-2:] == b"\xff\xd9":
+                    return True
+                if last[-8:] == b"ctrace\0\0":
+                    extra = int.from_bytes(last[:4], "little") + 12
+                    return 12 <= extra < it.size - 2 and \
+                        bytes(vol.read_run(it.start, it.size)[it.size - extra - 2:it.size - extra]) == b"\xff\xd9"
+                return False
+
             for a, b in self.blank_ranges:
                 c0 = max(2, (a - vol.data_off) // vol.cl + 2)
                 c1 = min(vol.max_cluster, (b - 1 - vol.data_off) // vol.cl + 2)
@@ -1199,16 +1232,16 @@ class Recovery:
                     # lies in one run straight through the unreadable patch. Then the whole file is
                     # worth keeping as well: picture viewers carry on past a gap, usually with the
                     # rest shifted or discoloured, which is far more than a sliver of the top.
-                    n = -(-it.size // vol.cl)
-                    if it.kind == "jpeg" and it.chain and it.start + n - 1 <= vol.max_cluster and \
-                            bytes(vol.read_run(it.start, it.size)[-2:]) == b"\xff\xd9":
-                        it._whole = True
+                    it._whole = runs_through(it)
             for it in todo:
                 if not hit.isdisjoint(it.chain):
                     it.note = (it.note + "; " if it.note else "") + \
                         "part of this file was in an area of the card that could not be read, and is blank there"
                     if it.kind != "jpeg" and it.grade in (GRADE_VERIFIED, GRADE_UNVERIFIED):
                         it.grade = GRADE_PARTIAL
+                    if it.kind == "jpeg" and it.percent < 100.0 and it.size and \
+                            not hit.isdisjoint(range(it.start, it.start + -(-it.size // vol.cl))):
+                        it._whole = runs_through(it)
         if todo:
             self.log(f"Checking every recovered file once more and saving {len(todo)} files")
         for k, (it, verdict) in enumerate(_ahead(todo, self._audit, _workers())):

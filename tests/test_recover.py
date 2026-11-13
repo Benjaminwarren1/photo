@@ -884,13 +884,19 @@ def test_recording_the_camera_never_finished_is_kept_and_explained(tmp_path):
     b.write("DCIM/IMG_0001.JPG", make_photo(112, 800, 600))
     b.write("DCIM/CLIP.MOV", bytes(cut))
     b.write("DCIM/IMG_0002.JPG", make_photo(113, 800, 600))
+    other = make_video(114, frames=90, moov_first=False)
+    no_index = other[:other.index(b"moov") - 4]                  # finished, but its index has been lost since
+    b.write("DCIM/CLIP2.MP4", no_index + bytes(3000))
+    b.write("DCIM/IMG_0003.JPG", make_photo(115, 800, 600))
     b.delete_all()
     for c in b._dirs["DCIM"].clusters:
         off = b.cluster_off(c)
         b.img[off:off + b.cl] = bytes(b.cl)
     rec = run(tmp_path, b)
-    clips = [i for i in rec.items if i.name.startswith("found_video")]
-    assert len(clips) == 1 and clips[0].grade == "Partial" and "never finished" in clips[0].note, clips
+    clips = sorted((i for i in rec.items if i.name.startswith("found_video")), key=lambda i: i.start)
+    assert len(clips) == 2 and all(i.grade == "Partial" for i in clips), clips
+    assert "cut off" in clips[0].note and "index" in clips[1].note and "cut off" not in clips[1].note
     data = (tmp_path / "out" / clips[0].saved_as).read_bytes()
     assert data[:len(cut)] == bytes(cut) and len(data) - len(cut) < 4096
-    assert sum(i.grade == "Verified" for i in rec.items) == 2
+    assert (tmp_path / "out" / clips[1].saved_as).read_bytes() == no_index, "saved more or less than the clip says it has"
+    assert sum(i.grade == "Verified" for i in rec.items) == 3
