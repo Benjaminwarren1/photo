@@ -24,9 +24,16 @@ from .wizard_page import PAGE
 
 
 def default_folder() -> Path:
+    """Where the copy of the card and the results go unless the person chooses otherwise: next to
+    the program itself, so that nobody has to find or type a folder; the Desktop if that fails."""
+    name = time.strftime("Recovered %Y-%m-%d %H%M")
+    if getattr(sys, "frozen", False):
+        app = Path(sys.executable).resolve().parent
+        if os.access(app, os.W_OK):
+            return app / name
     home = Path.home()
     base = home / "Desktop" if (home / "Desktop").is_dir() else home
-    return base / time.strftime("Photo recovery %Y-%m-%d %H%M")
+    return base / ("Photo recovery " + name.partition(" ")[2])
 
 
 class Session:
@@ -91,8 +98,9 @@ class Session:
 
     def space(self) -> dict:
         free = device.free_space(self.folder)
-        need = int((self.drive.size if self.drive else 0) * 1.5)
-        return dict(free=free, need=need, ok=free >= need)
+        size = self.drive.size if self.drive else 0
+        need = int(size * 1.02) + (64 << 20)        # the copy has to fit; what is recovered is usually far smaller
+        return dict(free=free, need=need, ok=free >= need, tight=free < int(size * 1.5))
 
     def start_clone(self, folder: str | None):
         if folder:
@@ -178,7 +186,8 @@ class Session:
             if self.step == "cloning":
                 self.poll_clone()
             s = dict(step=self.step, message=self.message, version=__version__, folder=str(self.folder),
-                     windows=sys.platform == "win32", can_resume=bool(getattr(self, "can_resume", False)),
+                     windows=sys.platform == "win32", beside=bool(getattr(sys, "frozen", False)) and self.folder.parent == Path(sys.executable).resolve().parent,
+                     can_resume=bool(getattr(self, "can_resume", False)),
                      found=[device.drive_dict(d) for d in self.found],
                      drive=device.drive_dict(self.drive) if self.drive else None)
             if self.step == "confirm" and self.drive:
@@ -186,7 +195,7 @@ class Session:
             if self.step == "cloning":
                 s["clone"] = self.clone_info
             if self.step in ("recovering", "done"):
-                s["log"] = self.log[-6:]
+                s["log"] = self.log[-40:]
                 prog = self.running.progress if (self.step == "recovering" and self.running) else None
                 if prog:
                     s["progress"] = dict(done=prog[0], total=prog[1])

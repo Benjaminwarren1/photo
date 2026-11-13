@@ -49,6 +49,10 @@ FOLDER_OK = "Recovered"
 FOLDER_PARTIAL = "Recovered - Partial"
 FOLDER_FILLED = "Recovered - Preview filled"
 FOLDER_LIVE = "Still on the card"
+FOLDER_SMALL = "Small pictures (thumbnails and app images)"
+SMALL_PICTURE = 640          # longest side, in pixels, below which a picture is not counted as a photo
+DOC_EXT = {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "rtf", "odt", "ods", "odp", "csv", "epub", "pages", "numbers"}
+MUSIC_EXT = {"mp3", "wav", "flac", "m4a", "ogg", "oga", "opus", "wma", "aac", "amr", "mid", "aiff"}
 FULL_NOTE = "not saved: the drive the results are being saved to ran out of space"
 
 GRADE_VERIFIED = "Verified"
@@ -553,6 +557,12 @@ class Recovery:
         self.summary["unreadable_bytes"] = sum(b - a for a, b in self.blank_ranges)
         if self._only is None and not self._part:
             self._other_partitions()
+        kinds = {"photos": 0, "videos": 0, "other": 0}       # what the files that cannot be checked are
+        for it in self.items:
+            if it.grade == GRADE_UNVERIFIED:
+                ext = it.name.rpartition(".")[2].lower() if "." in it.name else ""
+                kinds["photos" if ext in PHOTO_EXT else "videos" if ext in VIDEO_EXT else "other"] += 1
+        self.summary["unverified_kinds"] = kinds
         self.summary["findings"] = self._findings() if self._only is None and not self._part else []
         unsaved = sum(1 for it in self.items if getattr(it, "_unsaved", False))
         if unsaved and self._only is None and not self._part:
@@ -1494,7 +1504,10 @@ class Recovery:
             if not self.out:
                 return
             folder = FOLDER_OK if it.grade in (GRADE_VERIFIED, GRADE_NO_PREVIEW, GRADE_UNVERIFIED) else FOLDER_PARTIAL
-            sub = "/".join(_safe(p) for p in it.folder.split("/") if p)
+            # Sorted by what the file is, so that the photos are one click away. The folders the
+            # card had are not rebuilt (the report says where each file was): this rescues files,
+            # it does not put a card back the way it was.
+            sub = kind_folder(it.name, data)
             name = _safe(it.name)
             if folder == FOLDER_PARTIAL and it.percent < 100.0:
                 stem, dot, ext = name.rpartition(".")
@@ -1546,6 +1559,23 @@ class Recovery:
         self.out.mkdir(parents=True, exist_ok=True)
         (self.out / "report.json").write_text(json.dumps(dict(summary=self.summary, files=rows), indent=1))
         write_html(self.out / "report.html", self.summary, rows)
+
+
+def kind_folder(name: str, data: bytes = b"") -> str:
+    """The folder a recovered file is sorted into, by what kind of file it is."""
+    ext = name.rpartition(".")[2].lower() if "." in name else ""
+    if ext in JPEG_EXT or ext in ("png", "gif", "bmp"):
+        # thumbnails, icons and pictures apps keep for themselves would bury the real photos
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with Image.open(io.BytesIO(data)) as im:
+                    if max(im.size) < SMALL_PICTURE:
+                        return FOLDER_SMALL
+        except Exception:  # noqa: BLE001
+            pass
+    return ("Photos" if ext in PHOTO_EXT else "Videos" if ext in VIDEO_EXT else "Documents" if ext in DOC_EXT
+            else "Music and sound" if ext in MUSIC_EXT else "Other files")
 
 
 def _write(dest: Path, data: bytes) -> None:
