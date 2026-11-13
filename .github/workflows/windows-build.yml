@@ -1,0 +1,48 @@
+name: windows build
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install . pyinstaller
+      - run: python -c "from photorecover import jpeg; assert jpeg.HAVE_C, 'C decoder was not built'"
+      # A folder, not a single self-extracting file: fewer antivirus false alarms and a faster start.
+      - run: pyinstaller --noconfirm --clean --noupx --name PhotoRecovery --console --version-file packaging/version_info.txt packaging/entry.py
+      - name: Smoke test the packaged program on a synthetic card
+        shell: bash
+        run: |
+          python -c "from photorecover.synth.scenarios import used_card; b = used_card(fat_type=16, cluster_size=16384, size_mb=64, seed=31, photos=12); b.delete_all(); b.save('smoke.img')"
+          dist/PhotoRecovery/PhotoRecovery.exe --version
+          dist/PhotoRecovery/PhotoRecovery.exe drives
+          dist/PhotoRecovery/PhotoRecovery.exe recover smoke.img --out smoke-out --json | tee smoke.json
+          python -c "import json; s = json.load(open('smoke.json')); assert s['fast_decoder'] and s['counts']['Verified'] >= 8, s"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhotoRecovery-windows
+          path: dist/PhotoRecovery
+      # The newest build is also kept as a "dev-build" pre-release, so it can be fetched with a plain download.
+      - name: Publish as the dev-build pre-release
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && 7z a -tzip ../PhotoRecovery-windows.zip PhotoRecovery > /dev/null)
+          sha="${{ github.event.pull_request.head.sha || github.sha }}"
+          gh release view dev-build > /dev/null 2>&1 || gh release create dev-build --prerelease --title "Development build" --notes "Rebuilt automatically from the newest code. Unsigned and untested: for trying things out only." --target "$sha"
+          gh release upload dev-build PhotoRecovery-windows.zip --clobber
+          gh release edit dev-build --notes "Built from $sha. Rebuilt automatically from the newest code. Unsigned and untested: for trying things out only."

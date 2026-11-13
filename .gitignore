@@ -218,3 +218,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# photorecover: never commit disk images, recovered output or real photos
+*.img
+*.dd
+*.raw
+*.iso
+*.jpg
+*.jpeg
+*.JPG
+*.png
+*.heic
+*.mp4
+*.3gp
+*.mov
+Recovered*/
+*.photorecover/
