@@ -538,6 +538,10 @@ def test_files_in_an_unreadable_part_of_a_failing_card_are_never_passed_off_as_g
     for t in victims:
         it = next(i for i in rec.items if (i.start, i.size) == (t.clusters[0], t.size))
         assert "could not be read" in it.note and it.grade in ("Partial", "Not recoverable"), (it.grade, it.note)
+        if it.grade == "Partial":
+            assert "whole file is saved too" in it.note, it.note
+            whole = [p for p in (tmp_path / "out" / "Recovered - Partial").rglob("*whole file*") if p.stat().st_size == t.size]
+            assert whole, "the whole damaged file was not kept"
     assert "failing" in (tmp_path / "out" / "report.html").read_text()
 
 
@@ -864,3 +868,29 @@ def test_motion_photo_says_its_video_is_whole(tmp_path):
     assert "motion photo" in notes[len(good)], notes
     assert "without checking" in notes[len(bad)], notes
     assert "processing notes" in notes[len(traced)], notes
+
+
+def test_recording_the_camera_never_finished_is_kept_and_explained(tmp_path):
+    """Battery died mid-recording: the video data is on the card with no index and no folder entry.
+    It cannot be checked or played as it is, so it is kept as Partial with a plain explanation."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    from photorecover.synth.videos import make_video
+    whole = make_video(111, frames=150, moov_first=False)
+    cut = bytearray(whole[:whole.index(b"moov") - 4])
+    at = cut.index(b"mdat") - 4
+    cut[at:at + 4] = bytes(4)                                    # the length was to be filled in at the end
+    b = FatBuilder(64, 16, 4096)
+    b.write("DCIM/IMG_0001.JPG", make_photo(112, 800, 600))
+    b.write("DCIM/CLIP.MOV", bytes(cut))
+    b.write("DCIM/IMG_0002.JPG", make_photo(113, 800, 600))
+    b.delete_all()
+    for c in b._dirs["DCIM"].clusters:
+        off = b.cluster_off(c)
+        b.img[off:off + b.cl] = bytes(b.cl)
+    rec = run(tmp_path, b)
+    clips = [i for i in rec.items if i.name.startswith("found_video")]
+    assert len(clips) == 1 and clips[0].grade == "Partial" and "never finished" in clips[0].note, clips
+    data = (tmp_path / "out" / clips[0].saved_as).read_bytes()
+    assert data[:len(cut)] == bytes(cut) and len(data) - len(cut) < 4096
+    assert sum(i.grade == "Verified" for i in rec.items) == 2
