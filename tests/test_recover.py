@@ -724,3 +724,39 @@ def test_every_partition_on_a_card_is_recovered(tmp_path, table):
         want = [t for t in part.history if t.recoverable]
         assert want and all(t.sha256 in got for t in want), f"{sum(t.sha256 in got for t in want)} of {len(want)}"
     assert "partition 2" in (tmp_path / "out" / "report.html").read_text()
+
+
+@pytest.mark.parametrize("zero_high", [False, True])
+def test_files_from_deleted_folders_keep_their_whole_path(tmp_path, zero_high):
+    """Seen on a real card: everything deleted, folders included. Files several folders deep were
+    all saved into one folder, where equal names collided. Each lost folder still records its
+    parent, so the whole path can be rebuilt."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    b = FatBuilder(96, 32, 512, zero_high_on_delete=zero_high)
+    b.next_free = 70000 if zero_high else b.next_free
+    pics = [make_photo(9100 + i, 640, 480) for i in range(4)]
+    paths = ["DCIM/TRIP/DAY1/IMG_0001.JPG", "DCIM/TRIP/DAY2/IMG_0001.JPG", "DCIM/TRIP/IMG_0001.JPG",
+             "SAVES/GAME/SLOT/DEEP/IMG_0001.JPG"]
+    for path, pic in zip(paths, pics):
+        b.mkdir(path.rpartition("/")[0])
+        b.write(path, pic)
+    b.delete_all()
+    gone = 0
+    for d in b._dirs.values():                                   # then every folder
+        for o in b._dir_slots(d):
+            if b.img[o + 11] == 0x10 and b.img[o] not in (0, 0x2E, 0xE5):
+                b.img[o] = 0xE5
+                gone += 1
+                if zero_high:
+                    b.img[o + 20:o + 22] = bytes(2)
+    assert gone == 8
+    img = tmp_path / "card.img"
+    b.save(img)
+    rec = Recovery(img, tmp_path / "out")
+    rec.run()
+    saved = {str(p.relative_to(tmp_path / "out" / FOLDER_OK)).replace("\\", "/"): hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in (tmp_path / "out" / FOLDER_OK).rglob("*") if p.is_file()}
+    want = {"/".join("_" + part[1:] for part in path.split("/")):
+            hashlib.sha256(pic).hexdigest() for path, pic in zip(paths, pics)}
+    assert saved == want

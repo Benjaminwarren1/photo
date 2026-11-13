@@ -377,6 +377,9 @@ class FatVolume:
             x = ext.decode("latin1").rstrip()
             short = base + ("." + x if x else "")
             long = "".join(lfn).rstrip("￿") if lfn else ""
+            if not long and e[12] & 0x18:      # Windows stores an all-lower-case short name as flags
+                shown = (base.lower() if e[12] & 0x08 else base) + ("." + (x.lower() if e[12] & 0x10 else x) if x else "")
+                long = shown
             wt, wd = struct.unpack_from("<HH", e, 22)
             out.append(Entry(name=long or short, short=short, deleted=deleted, is_dir=bool(attr & 0x10),
                              start=lo | (hi << 16), start_hi_stored=hi, size=size, where=where,
@@ -496,30 +499,69 @@ class FatVolume:
                         break
                 if got:
                     orphans.append((c, got))
+        # Name each lost folder and rebuild its whole path. A folder's own first cluster still says
+        # where it is (".") and where its parent is (".."); its name is in the parent's entry for it.
+        # On FAT32 a delete often blanks the upper half of the start cluster in that entry, so a
+        # match on the lower half is accepted when the entry sits in the right parent.
+        root = self.root_cluster if self.fat_bits == 32 else 0
+        parent: dict[int, int] = {}
+        home: dict[int, int] = {}              # any cluster of a lost folder -> that folder's first cluster
+        first = None
         for c, ents in orphans:
-            for e in ents:
-                if e.is_dir and e.short not in (".", ".."):
-                    dir_path.setdefault(e.start, e.name)
+            if ents and ents[0].short == ".":
+                first = c
+                up = next((e.start for e in ents[:2] if e.short == ".."), 0)
+                parent[c] = 0 if up in (0, root) else up
+            if first is not None:
+                home[c] = first
+        named: dict[int, list[Entry]] = {}
+        for e in out + [e for _, ents in orphans for e in ents]:
+            if e.is_dir and e.short not in (".", ".."):
+                named.setdefault(e.start, []).append(e)
+                if e.deleted and self.fat_bits == 32 and e.start >> 16 == 0:
+                    named.setdefault(-(e.start & 0xFFFF) - 1, []).append(e)
+        live_path = dict(dir_path)
+        full: dict[int, str] = {}
+
+        def inside(e: Entry, up: int) -> bool:
+            if up == 0:
+                return e.in_tree and e.path == ""
+            return home.get(e.where, e.where) == up
+
+        def path_of(c: int, depth: int = 0) -> str:
+            if c in full:
+                return full[c]
+            if c in live_path and c not in parent:
+                return live_path[c]
+            up = parent.get(c)
+            exact, low = named.get(c, []), named.get(-(c & 0xFFFF) - 1, []) if c >> 16 else []
+            pick = None
+            if up is not None:
+                pick = next((e for e in exact + low if inside(e, up)), None)
+            pick = pick or (exact[0] if exact else None) or (low[0] if len(low) == 1 else None)
+            name = pick.name if pick else f"_lost_folder_{c}"
+            if up is None and pick is not None and pick.in_tree:
+                up_path = pick.path
+            elif up and depth < 32:
+                full[c] = name                       # guards against a loop of folders
+                up_path = path_of(up, depth + 1)
+            else:
+                up_path = ""
+            full[c] = (up_path + "/" if up_path else "") + name
+            return full[c]
+
         last_path = ""
         for c, ents in orphans:
             if ents and ents[0].short == ".":
-                last_path = dir_path.get(c, f"_lost_folder_{c}")
-            elif c in dir_path:
-                last_path = dir_path[c]
+                last_path = path_of(c)
+            elif c in named or c in live_path:
+                last_path = path_of(c)
             # a directory that grew past one cluster: its later clusters follow, with no dot entries
             for e in ents:
                 if e.short in (".", ".."):
                     continue
                 e.path = last_path
                 out.append(e)
-        # resolve nested orphan paths one level (DCIM/100MEDIA)
-        parent_of = {e.start: e.path for e in out if e.is_dir}
-        for e in out:
-            if not e.live and e.path and "/" not in e.path:
-                for st, pth in dir_path.items():
-                    if pth == e.path and parent_of.get(st):
-                        e.path = parent_of[st] + "/" + e.path
-                        break
         # the same entry can be seen twice; keep one
         uniq: dict[tuple, Entry] = {}
         for e in out:
