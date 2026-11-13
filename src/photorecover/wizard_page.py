@@ -91,9 +91,9 @@ const views={
   const rows=[["Verified","Recovered and double-checked","Each one matches the small preview picture the camera stored inside it, so the tool knows the picture is right."],
    ["Complete, no preview","Recovered whole","The whole file is there from start to end and opens. It has no built-in preview to compare against, so the tool could not double-check the picture itself. These are almost always fine."],
    ["Recovered, unverified","Recovered, not checkable","Videos, and some photos and other files, that are all there but that the tool has no way to check inside. Open a few to make sure."],
-   ["Partial","Partly recovered","The top part of the picture, or part of a video. The rest is no longer on the card. Saved in their own folder."],
+   ["Partial","Partly recovered","The top part of the picture, or part of a video, saved in its own folder. The rest could not be found, most likely because newer files were saved over it. What has been overwritten is gone for good: no tool or lab can bring it back."],
    ["Needs review","Waiting for you to decide","Close calls where the tool would rather ask than guess."],
-   ["Not recoverable","Could not be recovered","Their space on the card has been reused by newer files."]]
+   ["Not recoverable","Could not be recovered","Newer files have been saved over them. What has been overwritten is gone for good: no other tool or paid lab can bring it back, so there is no need to keep trying."]]
    .filter(r=>c[r[0]]).map(r=>`<tr><td class="n">${c[r[0]].toLocaleString()}</td><td><b>${r[1]}</b><div class="soft why">${r[2]}</div></td></tr>`).join("");
   return `<h1>Finished</h1>${((S.summary||{}).findings||[]).map(f=>`<div class="note">${esc(f.text)}</div>`).join("")}
   ${rows?`<p class="lead">${got.toLocaleString()} file${got===1?" was":"s were"} recovered.</p>`:""}<table>${rows||"<tr><td>No deleted files were found on this card.</td></tr>"}</table>
