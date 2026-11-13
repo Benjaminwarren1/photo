@@ -483,7 +483,90 @@ class Recovery:
         return out
 
     def run(self) -> dict:
+        """The whole recovery, pass by pass. Each pass takes only what its own evidence proves, and
+        what it takes leaves the pool, so that later passes cannot hand the same space out twice."""
         t0 = self._t0 = time.time()
+        entries, newer = self._read_folders()
+        vol = self.vol
+        self._blank = vol.blank_clusters()
+        self._avail = ~vol.allocated() & ~self._blank
+        self._avail[:2] = False
+        used_fraction = 1.0 - self._blank[2:].mean() if vol.ncl else 0.0
+        targets = [e for e in entries if not e.live and not e.is_dir and e.size > 0]
+        self.log(f"{len(targets)} deleted or lost files listed; {used_fraction:.0%} of the card holds data")
+        self._rb = Rebuilder(vol, self._avail)
+        self._rb.always_ask = self.always_ask
+        self._vr = VideoRebuilder(vol, self._avail)
+        self._items = items = self._list_items(targets)
+        jpegs = [i for i in items if i.kind == "jpeg"]
+        others = [i for i in items if i.kind == "other"]
+
+        pending, loose = self._whole_photos(jpegs)
+        ruled = self._videos(others)
+        self._other_files([it for it in others if id(it) not in ruled])
+        tried = {it.start for it in pending}
+        self._photos_in_pieces(pending, loose)
+        found = self._scan_for_photos(tried) if self._only is None else []
+        if self._only is None:
+            self._scan_for_others()
+        self._name_found(found)
+
+        self.items = items
+        if newer is not None:
+            self._shared_taken = newer._taken
+        self._deliver()
+        if newer is not None:
+            self.items = newer.items + items
+            self.problems += newer.problems
+        self.progress = None
+        cl = vol.cl
+        self.summary = dict(tool=f"photorecover {__version__}", filesystem=(f"{newer.vol.kind} now, and {vol.kind}" if newer is not None else vol.kind),
+                            cluster_size=cl, clusters=vol.ncl, card_in_use=round(float(used_fraction), 3),
+                            files_listed=len(items), counts=self._counts(), seconds=round(time.time() - t0, 1),
+                            fast_decoder=jpeg.HAVE_C, problems=self.problems[:50],
+                            steps=[[m, round((self.steps[i + 1][1] if i + 1 < len(self.steps) else time.time()) - t, 1)]
+                                   for i, (m, t) in enumerate(self.steps)],
+                            old_layout=self.old_layout, unreadable=self.unreadable)
+        self.summary["since_format"] = len(newer.items) if newer is not None else 0
+        self.summary["still_on_card"] = self._save_existing() if self._only is None else None
+        if self._only is None:
+            self.summary["counts"] = self._counts()
+            self.summary["files_listed"] = len(self.items)
+            self.summary["problems"] = self.problems[:50]
+        self.summary["damaged_start"] = bool(getattr(self.vol if newer is None else newer.vol, "repaired", False))
+        self.summary["unreadable_bytes"] = sum(b - a for a, b in self.blank_ranges)
+        if self._only is None and not self._part:
+            self._other_partitions()
+        self.summary["findings"] = self._findings() if self._only is None and not self._part else []
+        if self.out and self._only is None and not self._part:
+            self._write_report()
+        return self.summary
+
+    def _claim(self, chain) -> None:
+        self._avail[np.asarray(chain, np.int64)] = False
+
+    def _still_free(self, r) -> bool:
+        return bool(self._avail[np.asarray(r.chain, np.int64)].all())
+
+    def _ahead(self, jobs, fn):
+        return _ahead(jobs, fn, _workers())
+
+    def _attempt(self, it, fn, *args, **kw):
+        """One odd file must never stop the whole run."""
+        try:
+            return fn(*args, **kw)
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            at = traceback.extract_tb(e.__traceback__)[-1]
+            self.problems.append(f"{it.name if it else '?'}: {type(e).__name__}: {e} "
+                                 f"({Path(at.filename).name}:{at.lineno})")
+            if it is not None:
+                it.note = "the tool hit an unexpected problem with this file and skipped it"
+            return None
+
+    def _read_folders(self):
+        """Every folder entry on the card, and, when the card was reformatted with different
+        settings and used again, the recovery of the newer layer (self.vol is then the older one)."""
         vol = self.vol
         self.old_layout = None
         newer: Recovery | None = None
@@ -534,40 +617,11 @@ class Recovery:
             seen_now = {(e.short, e.size, e.mtime) for e in mine}
             self.vol = vol = old
             entries = [e for e in vol.scan_entries() if (e.short, e.size, e.mtime) not in seen_now]
-        blank = vol.blank_clusters()
-        allocated = vol.allocated()
-        avail = ~allocated & ~blank
-        avail[:2] = False
-        used_fraction = 1.0 - blank[2:].mean() if vol.ncl else 0.0
-        targets = [e for e in entries if not e.live and not e.is_dir and e.size > 0]
-        self.log(f"{len(targets)} deleted or lost files listed; {used_fraction:.0%} of the card holds data")
-        rb = Rebuilder(vol, avail)
-        rb.always_ask = self.always_ask
-        cl = vol.cl
+        return entries, newer
 
-        def claim(chain):
-            avail[np.asarray(chain, np.int64)] = False
-
-        def attempt(it, fn, *args, **kw):
-            """One odd file must never stop the whole run."""
-            try:
-                return fn(*args, **kw)
-            except Exception as e:  # noqa: BLE001
-                import traceback
-                at = traceback.extract_tb(e.__traceback__)[-1]
-                self.problems.append(f"{it.name if it else '?'}: {type(e).__name__}: {e} "
-                                     f"({Path(at.filename).name}:{at.lineno})")
-                if it is not None:
-                    it.note = "the tool hit an unexpected problem with this file and skipped it"
-                return None
-
-        def ahead(jobs, fn):
-            return _ahead(jobs, fn, _workers())
-
-        def still_free(r) -> bool:
-            return bool(avail[np.asarray(r.chain, np.int64)].all())
-
-        # one item per distinct (start, size); a long name wins over a short one
+    def _list_items(self, targets) -> list[Item]:
+        """One item per distinct (start, size); a long name wins over a short one."""
+        vol = self.vol
         seen: dict[tuple[int, int], Item] = {}
         for e in targets:
             ext = e.ext
@@ -581,36 +635,36 @@ class Recovery:
             it._hint = vol.hint_chain(e)
             if key not in seen or (seen[key].name.startswith("_") and not e.name.startswith("_")):
                 seen[key] = it
-        items = sorted(seen.values(), key=lambda i: i.start)
-        jpegs = [i for i in items if i.kind == "jpeg"]
-        others = [i for i in items if i.kind == "other"]
+        return sorted(seen.values(), key=lambda i: i.start)
 
-        # Pass 1: photos still in one piece. Exact structural proof, then they leave the pool.
+    def _whole_photos(self, jpegs):
+        """Pass 1: photos still in one piece. Exact structural proof, then they leave the pool.
+        Returns the photos still to rebuild, and those whose picture ends before the recorded size."""
         self.log(f"Checking {len(jpegs)} photos")
         pending: list[Item] = []
         loose: list[tuple[Item, Result]] = []
         def whole(it):
-            r = attempt(it, rb.prove_chain, it._hint, it.size) if it._hint else None
+            r = self._attempt(it, self._rb.prove_chain, it._hint, it.size) if it._hint else None
             if r is not None:
                 return True, r
-            return False, attempt(it, rb.rebuild, it.start, it.size, contiguous_only=True)
+            return False, self._attempt(it, self._rb.rebuild, it.start, it.size, contiguous_only=True)
 
-        for k, (it, (proved, r)) in enumerate(ahead(jpegs, whole)):
+        for k, (it, (proved, r)) in enumerate(self._ahead(jpegs, whole)):
             self.progress = (k, len(jpegs))
             hint = it._hint
-            if r is not None and r.status == "complete" and not still_free(r):
+            if r is not None and r.status == "complete" and not self._still_free(r):
                 proved, r = whole(it)       # an earlier photo has just taken some of this space: look again
             if proved:
                 pieces = 1 + sum(1 for a, b in zip(hint, hint[1:]) if b != a + 1)
                 self._accept(it, r, "found whole" if pieces == 1 else
                              f"rebuilt from {pieces} pieces using the card's own record")
-                claim(r.chain)
+                self._claim(r.chain)
                 continue
             if r is None:
                 continue
             if r.status == "complete" and r.exact_end:
                 self._accept(it, r, "found whole")
-                claim(r.chain)
+                self._claim(r.chain)
             elif r.status == "complete":
                 loose.append((it, r))
             elif r.status == "unsupported":
@@ -619,16 +673,18 @@ class Recovery:
                 it.note = r.reason
             else:
                 pending.append(it)
+        return pending, loose
 
-        # Videos: every frame and audio packet listed in the video's index is a checkpoint.
-        vr = VideoRebuilder(vol, avail)
+    def _videos(self, others) -> set[int]:
+        """Videos: every frame and audio packet listed in the video's index is a checkpoint.
+        Returns the ids of the items this pass has ruled on."""
         videos = [i for i in others if i.name.rpartition(".")[2].lower() in CONTAINERS]
         rejected: set[int] = set()         # videos the frame check has ruled on: no second chance as "other"
         if videos:
             self.log(f"Checking {len(videos)} videos")
         for k, it in enumerate(videos):
             self.progress = (k, len(videos))
-            v = attempt(it, vr.rebuild, it.start, it.size)
+            v = self._attempt(it, self._vr.rebuild, it.start, it.size)
             if v is None:
                 continue
             if v.status == "failed":
@@ -636,7 +692,7 @@ class Recovery:
                 # or the file lies whole in one run, the pass below may still save it, unverified.
                 it._video_why = v.reason
                 continue
-            if v.status == "complete" and not _valid_isobmff(vr.read(v, it.size)):
+            if v.status == "complete" and not _valid_isobmff(self._vr.read(v, it.size)):
                 # every checkpoint matched, but the file does not end where this entry says:
                 # the space now belongs to a different, later video
                 it.note = "its space was reused by a later file"
@@ -654,22 +710,22 @@ class Recovery:
                     it.grade = GRADE_UNVERIFIED
                     it.note += ("; but a join between two pieces could not be placed exactly, "
                                 "so watch it through for a brief glitch")
-                claim(real)
+                self._claim(real)
             else:
                 it.grade, it.note = GRADE_PARTIAL, v.reason + "; the gaps are left blank and will show as glitches"
-        done_videos = {id(i) for i in videos if i.chain} | rejected
+        return {id(i) for i in videos if i.chain} | rejected
 
-        # Other file types that are whole.
+    def _other_files(self, others) -> None:
+        """Other file types that are whole."""
+        vol, cl = self.vol, self.vol.cl
         for it in others:
-            if id(it) in done_videos:
-                continue
             n = -(-it.size // cl)
             if not vol.valid(it.start) or it.start + n - 1 > vol.max_cluster:
                 it.note = ("the card no longer records where this file was stored" if it.start == 0
                            else "start cluster is outside the card")
                 continue
             chain = it._hint or list(range(it.start, it.start + n))
-            if not avail[chain].all():
+            if not self._avail[chain].all():
                 it.note = "its space was reused by another file"
                 continue
             ext = it.name.rpartition(".")[2].lower() if "." in it.name else ""
@@ -682,7 +738,7 @@ class Recovery:
             # only kinds that can be checked need reading through; the rest are saved as they are
             verdict = "unverified"
             if ext in SIGNATURES:
-                verdict = attempt(it, lambda: check_other(ext, vol.read_chain(chain, it.size)) or "gone")
+                verdict = self._attempt(it, lambda: check_other(ext, vol.read_chain(chain, it.size)) or "gone")
                 if verdict is None:          # the check itself failed on this file: noted, and the run goes on
                     continue
                 verdict = None if verdict == "gone" else verdict
@@ -698,46 +754,45 @@ class Recovery:
             it.method = "found whole"
             if verdict == "verified":
                 it.grade = GRADE_VERIFIED
-                claim(chain)
+                self._claim(chain)
                 if why and not why.startswith("this file type"):
                     it.note = why
             else:
                 it.note = why
 
-        # Pass 2: photos in pieces. Two rounds, because every photo finished frees
-        # the others from having to consider its clusters.
+    def _stale_entry(self, it) -> bool:
+        """Its first cluster has since been proved to belong to another file, so this folder
+        entry is out of date. What starts there is that file, not this one."""
+        if not self.vol.valid(it.start) or self._avail[it.start]:
+            return False
+        now = next((o for o in self._items if o.chain and o is not it and it.start in o.chain[:1]), None) \
+            or next((o for o in self._items if o.chain and o is not it and it.start in o.chain), None)
+        it.note = ("its space now holds a different file" +
+                   (f" ({now.name})" if now is not None and now.name else "") + ", saved after this one was deleted")
+        it._last = None
+        return True
+
+    def _photos_in_pieces(self, pending, loose) -> None:
+        """Pass 2: photos in pieces. Two rounds, because every photo finished frees the others
+        from having to consider its clusters."""
         if pending:
             self.log(f"Rebuilding {len(pending)} photos that are stored in pieces")
-        tried = {it.start for it in pending}
-
-        def stale_entry(it) -> bool:
-            """Its first cluster has since been proved to belong to another file, so this folder
-            entry is out of date. What starts there is that file, not this one."""
-            if not vol.valid(it.start) or avail[it.start]:
-                return False
-            now = next((o for o in items if o.chain and o is not it and it.start in o.chain[:1]), None) \
-                or next((o for o in items if o.chain and o is not it and it.start in o.chain), None)
-            it.note = ("its space now holds a different file" +
-                       (f" ({now.name})" if now is not None and now.name else "") + ", saved after this one was deleted")
-            it._last = None
-            return True
-
         for rnd in range(2):
             still = []
             for k, it in enumerate(pending):
                 self.progress = (k, len(pending))
-                if stale_entry(it):
+                if self._stale_entry(it):
                     continue
                 # First time round each next piece is sought only near the last one. On a real,
                 # much-used card it was within reach there for 998 joins in 1000; the second time
                 # round, with the easy photos out of the way, the whole card is searched.
-                r = attempt(it, rb.rebuild, it.start, it.size, wide=rnd == 1)
+                r = self._attempt(it, self._rb.rebuild, it.start, it.size, wide=rnd == 1)
                 if r is None:
                     continue
                 if r.status == "complete" and r.exact_end:
                     pieces = 1 + sum(1 for a, b in zip(r.chain, r.chain[1:]) if b != a + 1)
                     self._accept(it, r, "found whole" if pieces == 1 else f"rebuilt from {pieces} pieces")
-                    claim(r.chain)
+                    self._claim(r.chain)
                 elif r.status == "complete":
                     loose.append((it, r))
                 else:
@@ -747,7 +802,7 @@ class Recovery:
             if rnd == 0 and pending:
                 self.log(f"Searching the whole card for the rest of {len(pending)} photos")
         for it in pending:
-            if stale_entry(it):      # the photo that replaced it may only have been finished after its own turn
+            if self._stale_entry(it):      # the photo that replaced it may only have been finished after its own turn
                 continue
             r: Result = it._last
             it.chain, it.percent, it.picks = r.chain, r.percent, r.picks
@@ -759,18 +814,19 @@ class Recovery:
         # Photos whose picture ends before the recorded size (extra data after the end
         # marker). Only believable if nobody else proved a claim to the same clusters.
         for it, r in loose:
-            if avail[np.asarray(r.chain, np.int64)].all():
+            if self._avail[np.asarray(r.chain, np.int64)].all():
                 self._accept(it, r, "found whole")
                 it.note = self._trailer_note(it, r)
-                claim(r.chain)
+                self._claim(r.chain)
             else:
                 it.note = "its space was reused by a later file"
-        for it in items:        # and a photo left unfinished whose start one of those has just taken
-            if it.kind == "jpeg" and it.grade in (GRADE_REVIEW, GRADE_PARTIAL) and stale_entry(it):
+        for it in self._items:        # and a photo left unfinished whose start one of those has just taken
+            if it.kind == "jpeg" and it.grade in (GRADE_REVIEW, GRADE_PARTIAL) and self._stale_entry(it):
                 it.grade, it.chain, it.candidates, it.percent, it.method = GRADE_LOST, [], [], 0.0, ""
 
-        # Pass 3: photos with no folder entry left at all.
-        heads = self._photo_starts(avail) if self._only is None else []
+    def _scan_for_photos(self, tried) -> list[Item]:
+        """Pass 3: photos with no folder entry left at all."""
+        heads = self._photo_starts(self._avail)
         if heads:
             self.log(f"Looking at {len(heads)} photo starts that have no folder entry")
         found: list[Item] = []
@@ -780,25 +836,25 @@ class Recovery:
                       kind="jpeg", source="found by scanning")
             pieces = 1 + sum(1 for a, b in zip(r.chain, r.chain[1:]) if b != a + 1)
             self._accept(it, r, "found whole" if pieces == 1 else f"rebuilt from {pieces} pieces")
-            claim(r.chain)
+            self._claim(r.chain)
             found.append(it)
 
         def carve(c: int, wide: bool):
-            r = attempt(None, rb.rebuild, c, None, wide=wide)
+            r = self._attempt(None, self._rb.rebuild, c, None, wide=wide)
             if r is not None and r.status == "complete":
                 take(c, r)
             return r
 
         # First the ones still in one piece, which is most of them and needs no searching.
         def in_one_piece(c: int):
-            return attempt(None, rb.rebuild, c, None, contiguous_only=True) if avail[c] else None
+            return self._attempt(None, self._rb.rebuild, c, None, contiguous_only=True) if self._avail[c] else None
 
         broken: list[int] = []
-        for k, (c, r) in enumerate(ahead(heads, in_one_piece)):
+        for k, (c, r) in enumerate(self._ahead(heads, in_one_piece)):
             self.progress = (k, len(heads))
-            if not avail[c]:
+            if not self._avail[c]:
                 continue
-            if r is not None and r.status == "complete" and not still_free(r):
+            if r is not None and r.status == "complete" and not self._still_free(r):
                 r = in_one_piece(c)
             if r is not None and r.status == "complete":
                 take(c, r)
@@ -811,7 +867,7 @@ class Recovery:
         again: list[int] = []
         for k, c in enumerate(broken):
             self.progress = (k, len(broken))
-            if avail[c]:
+            if self._avail[c]:
                 r = carve(c, False)
                 # One that joined a piece by searching nearby, then got stuck, has shown that its
                 # pieces are on the card: it has earned a search of all of it. So has one with a
@@ -823,149 +879,126 @@ class Recovery:
             self.log(f"Searching the whole card for the rest of {len(again)} of them")
         for k, c in enumerate(again):
             self.progress = (k, len(again))
-            if avail[c]:
+            if self._avail[c]:
                 carve(c, True)
-        # Pass 4: pictures of other kinds, and videos, with no folder entry left. A PNG carries a
-        # checksum on every part and a video an index of every frame, so each is taken only when
-        # its own contents vouch for it.
+        return found
+
+    def _scan_for_others(self) -> None:
+        """Pass 4: pictures of other kinds, and videos, with no folder entry left. A PNG carries a
+        checksum on every part and a video an index of every frame, so each is taken only when
+        its own contents vouch for it."""
         # (a file saved unverified from its folder entry does not claim its space, so skip its start here)
-        begun = {it.chain[0] for it in items if it.chain}
+        begun = {it.chain[0] for it in self._items if it.chain}
         others_found = [(c, k) for c, k in getattr(self, "_other_starts", [])
-                        if avail[c] and c not in begun] if self._only is None else []
+                        if self._avail[c] and c not in begun]
         if others_found:
             self.log(f"Looking at {len(others_found)} other pictures and videos that have no folder entry")
-        data_end = vol.data_off + (vol.max_cluster - 1) * cl
-        numbers = {"png": 0, "video": 0, "heic": 0, "raw": 0}
-
-        def found_other(c, kind, ext, size, chain, grade, note, percent=100.0):
-            numbers[kind] += 1
-            it = Item(name=f"found_{kind}_{numbers[kind]:05d}.{ext}", folder="Found by scanning", size=size, start=c,
-                      kind="other", source="found by scanning", grade=grade, percent=percent,
-                      method="found whole" if all(b == a + 1 for a, b in zip(chain, chain[1:])) else "rebuilt from pieces",
-                      note=note, chain=chain)
-            claim([x for x in chain if x >= 0])
-            items.append(it)
-
-        def one_other(c: int, kind: str) -> None:
-            pos = vol.data_off + (c - 2) * cl
-            if kind == "png":
-                size = png_length(vol.m, pos, data_end)
-                chain = list(range(c, c + -(-size // cl))) if size else []
-                if size and avail[chain].all():
-                    found_other(c, "png", "png", size, chain, GRADE_VERIFIED, "every part of it passes its own checksum")
-                return
-            if kind == "tiff":
-                got = formats.tiff_length(vol.m, pos, data_end)
-                if got is None:
-                    return
-                size, ext = got
-                chain = list(range(c, c + -(-size // cl)))
-                if not avail[chain].all():
-                    return
-                checked = formats.check_tiff(vol.read_chain(chain, size), size, audit_jpeg)
-                if checked is not None:
-                    found_other(c, "raw", ext, size, chain, GRADE_UNVERIFIED, checked[1])
-                return
-            got = boxes_length(vol.m, pos, data_end)
-            if got is None or not ({b"moov", b"moof", b"meta"} & got[1]):
-                # A recording the camera never finished (battery died, card pulled out): the video
-                # data is there but the index that players need was never written. Keep the data
-                # in one run, up to the first blank or foreign cluster, and say what it is.
-                want = unfinished_video(vol.m, pos, data_end)
-                if want is not None:
-                    limit = c + (-(-want // cl) if want else (64 << 30) // cl)
-                    k = c + 1
-                    while k <= vol.max_cluster and k < limit and avail[k] and not blank[k] and \
-                            bytes(vol.cluster(k)[:3]) != b"\xff\xd8\xff" and bytes(vol.cluster(k)[4:8]) != b"ftyp":
-                        k += 1
-                    have = min(want, (k - c) * cl) if want else (k - c) * cl
-                    if have >= 256 << 10:
-                        brand = bytes(vol.m[pos + 8:pos + 12])
-                        ext = "mov" if brand == b"qt  " else "mp4"
-                        fix = ("A video repair tool can often rebuild it using another clip from the same camera")
-                        if not want:
-                            found_other(c, "video", ext, have, list(range(c, k)), GRADE_PARTIAL,
-                                        "a recording that was cut off before the camera finished writing it: its video "
-                                        "data is here, but the index that players need was never saved, so it will "
-                                        "not play as it is. " + fix)
-                        else:
-                            found_other(c, "video", ext, have, list(range(c, k)), GRADE_PARTIAL,
-                                        ("the video data of a clip whose index (the part players need) is no longer "
-                                         "on the card" if have == want else
-                                         "the first part of a clip's video data; the rest, and the index players "
-                                         "need, are no longer where they should be (overwritten, or stored elsewhere "
-                                         "on the card)") + ", so it will not play as it is. " + fix,
-                                        percent=round(100.0 * have / want, 1) if have < want else 100.0)
-                return
-            size, seen, brand = got
-            chain = list(range(c, c + -(-size // cl)))
-            if not avail[chain].all():
-                return
-            if brand == b"crx ":                      # Canon's newer RAW: built like a video file
-                if b"mdat" in seen:
-                    found_other(c, "raw", "cr3", size, chain, GRADE_UNVERIFIED,
-                                "its parts line up from start to end; the raw sensor data itself carries no check")
-            elif b"moov" in seen or b"moof" in seen:
-                ext = "mov" if brand == b"qt  " else "3gp" if brand[:2] == b"3g" else "m4a" if brand[:3] == b"M4A" else "mp4"
-                v = vr.rebuild(c, size) if b"moov" in seen else None
-                if v is not None and v.status == "complete" and not v.uncertain_joins and \
-                        avail[np.asarray(v.chain, np.int64)].all():
-                    found_other(c, "video", ext, size, v.chain, GRADE_VERIFIED,
-                                f"all {v.checked} frame and sound checkpoints match")
-                elif b"mdat" in seen:
-                    found_other(c, "video", ext, size, chain, GRADE_UNVERIFIED,
-                                "its parts line up from start to end, but its frames could not be checked; "
-                                "watch it through to make sure")
-            elif brand in (b"heic", b"heix", b"mif1", b"msf1", b"avif") and b"meta" in seen and b"mdat" in seen:
-                found_other(c, "heic", "avif" if brand == b"avif" else "heic", size, chain, GRADE_UNVERIFIED,
-                            "its parts line up from start to end; this file type cannot be checked further")
-
+        self._numbers = {"png": 0, "video": 0, "heic": 0, "raw": 0}
         for k, (c, kind) in enumerate(others_found):
             self.progress = (k, len(others_found))
-            if avail[c]:
-                attempt(None, one_other, c, kind)
+            if self._avail[c]:
+                self._attempt(None, self._scan_other, c, kind)
 
+    def _found_other(self, c, kind, ext, size, chain, grade, note, percent=100.0) -> None:
+        numbers = self._numbers
+        numbers[kind] += 1
+        it = Item(name=f"found_{kind}_{numbers[kind]:05d}.{ext}", folder="Found by scanning", size=size, start=c,
+                  kind="other", source="found by scanning", grade=grade, percent=percent,
+                  method="found whole" if all(b == a + 1 for a, b in zip(chain, chain[1:])) else "rebuilt from pieces",
+                  note=note, chain=chain)
+        self._claim([x for x in chain if x >= 0])
+        self._items.append(it)
+
+    def _scan_other(self, c: int, kind: str) -> None:
+        """What starts at cluster c, when it is a whole picture or video of another kind."""
+        vol, cl = self.vol, self.vol.cl
+        data_end = vol.data_off + (vol.max_cluster - 1) * cl
+        pos = vol.data_off + (c - 2) * cl
+        if kind == "png":
+            size = png_length(vol.m, pos, data_end)
+            chain = list(range(c, c + -(-size // cl))) if size else []
+            if size and self._avail[chain].all():
+                self._found_other(c, "png", "png", size, chain, GRADE_VERIFIED, "every part of it passes its own checksum")
+            return
+        if kind == "tiff":
+            got = formats.tiff_length(vol.m, pos, data_end)
+            if got is None:
+                return
+            size, ext = got
+            chain = list(range(c, c + -(-size // cl)))
+            if not self._avail[chain].all():
+                return
+            checked = formats.check_tiff(vol.read_chain(chain, size), size, audit_jpeg)
+            if checked is not None:
+                self._found_other(c, "raw", ext, size, chain, GRADE_UNVERIFIED, checked[1])
+            return
+        got = boxes_length(vol.m, pos, data_end)
+        if got is None or not ({b"moov", b"moof", b"meta"} & got[1]):
+            # A recording the camera never finished (battery died, card pulled out): the video
+            # data is there but the index that players need was never written. Keep the data
+            # in one run, up to the first blank or foreign cluster, and say what it is.
+            want = unfinished_video(vol.m, pos, data_end)
+            if want is not None:
+                limit = c + (-(-want // cl) if want else (64 << 30) // cl)
+                k = c + 1
+                while k <= vol.max_cluster and k < limit and self._avail[k] and not self._blank[k] and \
+                        bytes(vol.cluster(k)[:3]) != b"\xff\xd8\xff" and bytes(vol.cluster(k)[4:8]) != b"ftyp":
+                    k += 1
+                have = min(want, (k - c) * cl) if want else (k - c) * cl
+                if have >= 256 << 10:
+                    brand = bytes(vol.m[pos + 8:pos + 12])
+                    ext = "mov" if brand == b"qt  " else "mp4"
+                    fix = ("A video repair tool can often rebuild it using another clip from the same camera")
+                    if not want:
+                        self._found_other(c, "video", ext, have, list(range(c, k)), GRADE_PARTIAL,
+                                    "a recording that was cut off before the camera finished writing it: its video "
+                                    "data is here, but the index that players need was never saved, so it will "
+                                    "not play as it is. " + fix)
+                    else:
+                        self._found_other(c, "video", ext, have, list(range(c, k)), GRADE_PARTIAL,
+                                    ("the video data of a clip whose index (the part players need) is no longer "
+                                     "on the card" if have == want else
+                                     "the first part of a clip's video data; the rest, and the index players "
+                                     "need, are no longer where they should be (overwritten, or stored elsewhere "
+                                     "on the card)") + ", so it will not play as it is. " + fix,
+                                    percent=round(100.0 * have / want, 1) if have < want else 100.0)
+            return
+        size, seen, brand = got
+        chain = list(range(c, c + -(-size // cl)))
+        if not self._avail[chain].all():
+            return
+        if brand == b"crx ":                      # Canon's newer RAW: built like a video file
+            if b"mdat" in seen:
+                self._found_other(c, "raw", "cr3", size, chain, GRADE_UNVERIFIED,
+                            "its parts line up from start to end; the raw sensor data itself carries no check")
+        elif b"moov" in seen or b"moof" in seen:
+            ext = "mov" if brand == b"qt  " else "3gp" if brand[:2] == b"3g" else "m4a" if brand[:3] == b"M4A" else "mp4"
+            v = self._vr.rebuild(c, size) if b"moov" in seen else None
+            if v is not None and v.status == "complete" and not v.uncertain_joins and \
+                    self._avail[np.asarray(v.chain, np.int64)].all():
+                self._found_other(c, "video", ext, size, v.chain, GRADE_VERIFIED,
+                            f"all {v.checked} frame and sound checkpoints match")
+            elif b"mdat" in seen:
+                self._found_other(c, "video", ext, size, chain, GRADE_UNVERIFIED,
+                            "its parts line up from start to end, but its frames could not be checked; "
+                            "watch it through to make sure")
+        elif brand in (b"heic", b"heix", b"mif1", b"msf1", b"avif") and b"meta" in seen and b"mdat" in seen:
+            self._found_other(c, "heic", "avif" if brand == b"avif" else "heic", size, chain, GRADE_UNVERIFIED,
+                        "its parts line up from start to end; this file type cannot be checked further")
+
+    def _name_found(self, found) -> None:
+        """Number the photos found by scanning; a listed photo left unfinished that began where
+        one of them begins was that photo's out-of-date folder entry."""
         stale: dict[int, list[Item]] = {}
-        for old in items:
+        for old in self._items:
             if old.kind == "jpeg" and old.grade in (GRADE_REVIEW, GRADE_PARTIAL):
                 stale.setdefault(old.start, []).append(old)
         for n, it in enumerate(sorted(found, key=lambda i: i.start), 1):
             it.name = f"found_{n:05d}.jpg"
-            items.append(it)
+            self._items.append(it)
             for old in stale.get(it.start, ()):      # the listed photo that began here is this one's stale folder entry
                 old.grade, old.chain, old.candidates, old.percent = GRADE_LOST, [], [], 0.0
                 old.note = f"its space now holds a different, complete photo (saved as {it.name})"
-
-        self.items = items
-        self._rb, self._avail = rb, avail
-        if newer is not None:
-            self._shared_taken = newer._taken
-        self._deliver()
-        if newer is not None:
-            self.items = newer.items + items
-            self.problems += newer.problems
-        self.progress = None
-        self.summary = dict(tool=f"photorecover {__version__}", filesystem=(f"{newer.vol.kind} now, and {vol.kind}" if newer is not None else vol.kind),
-                            cluster_size=cl, clusters=vol.ncl, card_in_use=round(float(used_fraction), 3),
-                            files_listed=len(items), counts=self._counts(), seconds=round(time.time() - t0, 1),
-                            fast_decoder=jpeg.HAVE_C, problems=self.problems[:50],
-                            steps=[[m, round((self.steps[i + 1][1] if i + 1 < len(self.steps) else time.time()) - t, 1)]
-                                   for i, (m, t) in enumerate(self.steps)],
-                            old_layout=self.old_layout, unreadable=self.unreadable)
-        self.summary["since_format"] = len(newer.items) if newer is not None else 0
-        self.summary["still_on_card"] = self._save_existing() if self._only is None else None
-        if self._only is None:
-            self.summary["counts"] = self._counts()
-            self.summary["files_listed"] = len(self.items)
-            self.summary["problems"] = self.problems[:50]
-        self.summary["damaged_start"] = bool(getattr(self.vol if newer is None else newer.vol, "repaired", False))
-        self.summary["unreadable_bytes"] = sum(b - a for a, b in self.blank_ranges)
-        if self._only is None and not self._part:
-            self._other_partitions()
-        self.summary["findings"] = self._findings() if self._only is None and not self._part else []
-        if self.out and self._only is None and not self._part:
-            self._write_report()
-        return self.summary
 
     def _trailer_note(self, it, r) -> str:
         """What follows the picture inside its file. Phones add a short video (a motion or live
