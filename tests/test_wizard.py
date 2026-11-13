@@ -169,3 +169,23 @@ def test_copy_carries_on_after_the_card_drops_off(tmp_path, monkeypatch):
     want[1 << 20:(1 << 20) + 512] = bytes(512)
     assert dest.read_bytes() == bytes(want)
     assert second["sha256"] == hashlib.sha256(bytes(want)).hexdigest()
+
+
+def test_progress_file_held_open_by_another_program_does_not_stop_the_copy(tmp_path, monkeypatch):
+    """Seen on a real 128 GB copy: 26 minutes in, Windows refused to swap the progress file for an
+    instant (something else was reading it) and the copy stopped, blaming administrator rights."""
+    import os
+    from photorecover import device
+    src = tmp_path / "card.bin"
+    src.write_bytes(os.urandom(3 << 20))
+    real, calls = os.replace, {"n": 0}
+
+    def flaky(a, b):
+        calls["n"] += 1
+        if calls["n"] % 2:
+            raise PermissionError(13, "Access is denied")
+        return real(a, b)
+    monkeypatch.setattr(device.os, "replace", flaky)
+    info = device.clone(str(src), tmp_path / "copy.img", status_file=tmp_path / "status.json")
+    assert info["state"] == "done", info
+    assert (tmp_path / "copy.img").read_bytes() == src.read_bytes()

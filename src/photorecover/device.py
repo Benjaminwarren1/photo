@@ -227,6 +227,22 @@ GIVE_UP_AFTER = 48          # this many chunks in a row unreadable: the card has
 BLOCK = 64 << 10
 
 
+def _put(path: Path, text: str, must: bool = True) -> None:
+    """Replace a small file in one step. On Windows the swap is refused for a moment whenever another
+    program (a virus scanner, or whatever is watching the progress) has the old file open, so it
+    is tried again; a progress note that still cannot be written is skipped, not treated as a failure."""
+    tmp = Path(str(path) + ".tmp")
+    for attempt in range(40):
+        try:
+            tmp.write_text(text)
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 39 and must:
+                raise
+            time.sleep(0.05)
+
+
 def clone(source: str, dest: Path, size: int | None = None, status_file: Path | None = None,
           progress=None, cancelled=None) -> dict:
     """Read the whole card into one image file.
@@ -255,17 +271,13 @@ def clone(source: str, dest: Path, size: int | None = None, status_file: Path | 
         info = dict(state=state, done=done, total=total, bad_bytes=missing,
                     seconds=round(time.time() - t0, 1), **extra)
         if status_file:
-            tmp = Path(str(status_file) + ".tmp")
-            tmp.write_text(json.dumps(info))
-            os.replace(tmp, status_file)
+            _put(Path(status_file), json.dumps(info), must=False)
         if progress:
             progress(info)
         return info
 
     def save_map():
-        tmp = Path(str(map_file) + ".tmp")
-        tmp.write_text(json.dumps(dict(source=str(source), total=total, done=done, later=later, bad=bad)))
-        os.replace(tmp, map_file)
+        _put(map_file, json.dumps(dict(source=str(source), total=total, done=done, later=later, bad=bad)))
 
     def add(ranges: list, o: int, n: int) -> None:
         if ranges and ranges[-1][0] + ranges[-1][1] == o:
@@ -431,7 +443,11 @@ def clone(source: str, dest: Path, size: int | None = None, status_file: Path | 
             bad_file.write_text(json.dumps(dict(unreadable=bad, total=total)))
         else:
             bad_file.unlink(missing_ok=True)
-    except PermissionError:
+    except PermissionError as e:
+        if done:            # it was reading until now, so this is not about administrator rights
+            return note("error", error="io", resumable=True,
+                        message=f"The copy was interrupted ({e}). What has been copied so far is kept: "
+                                "start the copy again and it carries on from where it stopped.")
         return note("error", error="permission", message="Reading the card needs administrator rights.")
     except OSError as e:
         if not done:
