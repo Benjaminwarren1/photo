@@ -1009,3 +1009,83 @@ def test_a_full_output_drive_is_said_plainly_and_leaves_no_cut_short_file(tmp_pa
     assert sum(1 for i in rec.items if "ran out of space" in i.note and not i.saved_as) == 4
     first = rec.summary["findings"][0]
     assert first["kind"] == "out_full" and "4 files" in first["text"]
+
+
+def _wipe_folder(b, name="DCIM"):
+    for c in b._dirs[name].clusters:
+        off = b.cluster_off(c)
+        b.img[off:off + b.cl] = bytes(b.cl)
+
+
+def test_avi_and_stream_video_listed_in_a_folder(tmp_path):
+    """AVI is checked frame by frame against its own index; a transport stream (dashcam, camcorder)
+    has no index, so it is never called verified; and one whose middle was overwritten is not passed."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.videos import make_avi, make_ts
+    b = FatBuilder(96, 16, 8192)
+    files = {"DCIM/A.AVI": make_avi(1), "DCIM/NOINDEX.AVI": make_avi(2, index=False),
+             "DCIM/CAM.MTS": make_ts(3, m2ts=True), "DCIM/DASH.TS": make_ts(4)}
+    truth = {n: b.write(n, d) for n, d in files.items()}
+    hit = {n: b.write(n, d) for n, d in (("DCIM/HIT.AVI", make_avi(5)), ("DCIM/HIT.MTS", make_ts(6, m2ts=True)))}
+    b.delete_all()
+    for t in hit.values():
+        for c in t.clusters[20:24]:
+            off = b.cluster_off(c)
+            b.img[off:off + b.cl] = np.random.default_rng(c).bytes(b.cl)
+    rec = run(tmp_path, b)
+    by = {i.name: i for i in rec.items}
+    want = {"_.AVI": "Verified", "_OINDEX.AVI": "Recovered, unverified", "_AM.MTS": "Recovered, unverified",
+            "_ASH.TS": "Recovered, unverified"}
+    for (name, data), (short, grade) in zip(files.items(), want.items()):
+        it = by[short]
+        assert it.grade == grade, (name, it.grade, it.note)
+        assert (tmp_path / "out" / it.saved_as).read_bytes() == data
+    for short in ("_IT.AVI", "_IT.MTS"):
+        assert not by[short].saved_as.startswith(FOLDER_OK), (short, by[short].grade, by[short].note)
+    assert not any(i.source == "found by scanning" and i.grade != "Recovered - Partial" and i.start in
+                   {t.clusters[0] for t in truth.values()} for i in rec.items), "a listed video was saved twice"
+
+
+def test_avi_and_stream_video_with_no_folder_entry(tmp_path):
+    """With the folder gone: a whole AVI vouches for itself through its index, a recording from its
+    beginning is kept unverified, a cut-off AVI and the tail of an overwritten stream are kept as
+    partial, and nothing is saved twice."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.videos import make_avi, make_ts
+    b = FatBuilder(96, 16, 8192)
+    avi, ts, cut = make_avi(11), make_ts(12), make_avi(13, finished=False)
+    old, new = make_ts(14, packets=15000), make_ts(17, packets=6001)
+    b.write("DCIM/A.AVI", avi)
+    b.write("DCIM/DASH.TS", ts)
+    b.write("DCIM/CUT.AVI", cut)
+    t = b.write("DCIM/OLD.TS", old)
+    b.delete_all()
+    off = b.cluster_off(t.clusters[0])                 # loop recording: a newer, shorter clip lands on the old one
+    b.img[off:off + len(new)] = new
+    _wipe_folder(b)
+    rec = run(tmp_path, b)
+    saved = {(tmp_path / "out" / i.saved_as).read_bytes(): i for i in rec.items if i.saved_as}
+    assert saved[avi].grade == "Verified", saved[avi].note
+    assert saved[ts].grade == "Recovered, unverified" and "from its beginning" in saved[ts].note
+    assert saved[new].grade == "Recovered, unverified"
+    parts = [i for d, i in saved.items() if i.name.endswith(".avi") and d != avi]
+    assert len(parts) == 1 and parts[0].saved_as.startswith("Recovered - Partial") and cut.startswith(
+        (tmp_path / "out" / parts[0].saved_as).read_bytes()[:len(cut) - 8])
+    tails = [d for d, i in saved.items() if "middle of a recording" in i.note]
+    assert len(tails) == 1 and tails[0] in old and saved[tails[0]].saved_as.startswith("Recovered - Partial")
+    assert old not in saved and len([i for i in rec.items if i.saved_as]) == 5
+
+
+def test_stream_video_whose_count_jumps_is_kept_with_the_doubt_said(tmp_path):
+    """A listed stream whose packets line up but whose running count jumps part way (a glitch, or
+    a later clip written over it): never thrown away on that, never called verified, and told."""
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.videos import make_ts
+    b = FatBuilder(64, 16, 8192)
+    spliced = make_ts(7)[:188 * 6000] + make_ts(8)[188 * 6000:]
+    b.write("DCIM/SPLICE.MTS", spliced)
+    b.delete_all()
+    rec = run(tmp_path, b)
+    (it,) = [i for i in rec.items if i.saved_as]
+    assert it.grade == "Recovered, unverified" and "jumps about 50%" in it.note, (it.grade, it.note)
+    assert (tmp_path / "out" / it.saved_as).read_bytes() == spliced
