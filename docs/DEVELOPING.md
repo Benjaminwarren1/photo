@@ -7,7 +7,7 @@ Everything technical lives here; [README.md](../README.md) is written for the pe
 Most recovery tools assume every deleted file sat in one unbroken run on the card. Fragmented photos then
 come back with a grey or garbled lower half, or with part of another photo spliced in.
 
-photorecover follows each photo through the card piece by piece. Every candidate piece has to pass two tests:
+photolifeboat follows each photo through the card piece by piece. Every candidate piece has to pass two tests:
 
 1. **Structure.** A resumable JPEG decoder must run through it without the data ceasing to be valid.
 2. **Picture.** What it adds must match the small preview that phones and cameras embed in every photo.
@@ -21,28 +21,28 @@ and the report says plainly which files are verified, which are partial and whic
 
 ## The Windows build
 
-`packaging/PhotoRecovery.spec` builds one folder holding two programs that share their libraries:
-`PhotoRecovery.exe`, the windowed app (the wizard in a window of its own, through pywebview and the Edge
-WebView2 engine built into Windows), and `photorecover-cli.exe`, the command line. The app runs the command
+`packaging/PhotoLifeboat.spec` builds one folder holding two programs that share their libraries:
+`PhotoLifeboat.exe`, the windowed app (the wizard in a window of its own, through pywebview and the Edge
+WebView2 engine built into Windows), and `photolifeboat-cli.exe`, the command line. The app runs the command
 line for helper jobs that need standard output, such as copying the card. `packaging/installer.iss` (Inno
 Setup) wraps the folder in a per-user installer. CI builds both, smoke-tests the window, the installer and
 the uninstaller, and publishes them (see [RELEASING.md](RELEASING.md)).
 
 Without pywebview (`pip install ".[window]"` adds it), or without WebView2, the wizard opens in the browser
-instead. `PHOTORECOVER_BROWSER=1` forces the browser.
+instead. `PHOTOLIFEBOAT_BROWSER=1` forces the browser.
 
 ## Command line
 
-If you already have an image of the card (on Windows, `photorecover-cli.exe` from the build):
+If you already have an image of the card (on Windows, `photolifeboat-cli.exe` from the build):
 
 ```
 pip install .
-photorecover recover card.img --out recovered
+photolifeboat recover card.img --out recovered
 ```
 
 `--json` prints a machine-readable summary, and `report.json` in the output folder lists every file.
 
-`photorecover pilot card.img` runs the same recovery and then takes the close calls as JSON lines on standard input (`unresolved`, `candidates`, `pick`), so a script or an AI assistant can look at the candidate pictures and choose. A choice is only kept if the finished photo passes the same checks as any other.
+`photolifeboat pilot card.img` runs the same recovery and then takes the close calls as JSON lines on standard input (`unresolved`, `candidates`, `pick`), so a script or an AI assistant can look at the candidate pictures and choose. A choice is only kept if the finished photo passes the same checks as any other.
 
 Output:
 
@@ -63,11 +63,11 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The tests build synthetic cards (`photorecover.synth`) with realistic fragmentation, delete everything, and
+The tests build synthetic cards (`photolifeboat.synth`) with realistic fragmentation, delete everything, and
 check the tool rebuilds each file byte for byte and never delivers a wrong one. No real photos are used or
 stored in this repository.
 
-A small C extension (`src/photorecover/_scan.c`) does the JPEG decoding. If it cannot be built, a pure-Python
+A small C extension (`src/photolifeboat/_scan.c`) does the JPEG decoding. If it cannot be built, a pure-Python
 twin is used instead; it gives identical results but is far slower.
 
 

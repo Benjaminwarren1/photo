@@ -4,8 +4,8 @@ import io
 import numpy as np
 from PIL import Image
 
-from photorecover.output import preview_fill
-from photorecover.synth.photos import make_photo
+from photolifeboat.output import preview_fill
+from photolifeboat.synth.photos import make_photo
 
 
 def test_missing_part_is_filled_from_the_preview():

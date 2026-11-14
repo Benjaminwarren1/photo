@@ -3,10 +3,10 @@ import random
 
 import pytest
 
-from photorecover import _scan_py, jpeg
-from photorecover.synth.photos import make_photo
+from photolifeboat import _scan_py, jpeg
+from photolifeboat.synth.photos import make_photo
 
-_scan = pytest.importorskip("photorecover._scan")
+_scan = pytest.importorskip("photolifeboat._scan")
 
 
 @pytest.mark.parametrize("kw", [dict(), dict(restart_interval=3), dict(subsampling=0), dict(subsampling=1)])
@@ -57,7 +57,7 @@ def test_quick_look_at_candidates_agrees_with_full_decode():
     assert 2 in full and len(full) + len(short) <= len(clusters)
     for c, d in zip(full, dc):
         assert (by_full[int(c)][:16] == d).all()
-    from photorecover.jpeg import STATE
+    from photolifeboat.jpeg import STATE
     s0 = STATE.pack(0, *STATE.unpack(st.state)[1:])
     py = _scan_py.screen_many(image, 0, cl, clusters.astype("<i8").tobytes(), st.carry, s0, info.spec, 16)
     assert py[0] == full.astype("<i8").tobytes() and py[1] == dc.tobytes() and py[2] == short.astype("<i8").tobytes()
@@ -67,7 +67,7 @@ def test_flat_colour_is_not_mistaken_for_photo():
     """Stray data can decode as 'more of the last colour'. Where the picture has detail,
     that must never count as a match, however close the colour is."""
     import numpy as np
-    from photorecover.rebuild import NOT_A_PHOTO, Judge
+    from photolifeboat.rebuild import NOT_A_PHOTO, Judge
     photo = make_photo(78, 640, 480)
     info = jpeg.parse_header(photo)
     st = jpeg.Stream(info)
@@ -87,7 +87,7 @@ def test_quick_folder_filter_never_disagrees_with_the_folder_parser():
     """The sweep for lost folders rules most blocks out in bulk. That shortcut must say
     exactly what the real parser says about a block's first slot."""
     import numpy as np
-    from photorecover.fat import FatVolume, _slot_ok
+    from photolifeboat.fat import FatVolume, _slot_ok
     rng = np.random.default_rng(3)
     good = bytearray(b"IMG_0001JPG\x20" + bytes(20))
     slots = []

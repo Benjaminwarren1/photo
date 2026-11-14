@@ -3,7 +3,7 @@
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Photo Recovery</title>
+<title>Photo Lifeboat</title>
 <style>
 /* Laid out like a Windows setup wizard (title, content, Back / Next in the bottom right) and styled after
    Windows 11, so it looks like the rest of the computer. Follows the system's light or dark mode. */
@@ -58,7 +58,7 @@ label.opt:hover{background:var(--hover)}label.opt input{accent-color:var(--accen
 label.opt b{display:block;font-weight:600}label.opt small{color:var(--soft);font-size:.86rem}
 input[type=radio]{accent-color:var(--accent)}
 </style></head><body>
-<header class="top"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="15" rx="3" fill="var(--accent)"/><rect x="8" y="3" width="8" height="4" rx="1.5" fill="var(--accent)"/><circle cx="12" cy="12.5" r="4.2" fill="var(--layer)"/><circle cx="12" cy="12.5" r="2.4" fill="var(--accent)"/></svg><b>Photo Recovery</b><span id="ver"></span></header>
+<header class="top"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="15" rx="3" fill="var(--accent)"/><rect x="8" y="3" width="8" height="4" rx="1.5" fill="var(--accent)"/><circle cx="12" cy="12.5" r="4.2" fill="var(--layer)"/><circle cx="12" cy="12.5" r="2.4" fill="var(--accent)"/></svg><b>Photo Lifeboat</b><span id="ver"></span></header>
 <main><section id="view" aria-live="polite"></section></main>
 <footer class="bar" id="bar"></footer>
 <script>

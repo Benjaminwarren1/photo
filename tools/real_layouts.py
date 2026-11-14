@@ -1,11 +1,11 @@
 """Build card images with real formatting tools (not the test suite's own builders) and check
-that photorecover gets every deleted file back byte for byte.
+that photolifeboat gets every deleted file back byte for byte.
 
 Linux only, run as root. Needs: sgdisk, sfdisk, mkfs.fat, mkfs.exfat, mtools, exfat-fuse,
 mkfs.ext4 and loop devices. Each layout copies photos and videos on with the real
 filesystem code (mtools for FAT, exfat-fuse for exFAT, the kernel for ext4), deletes some,
 writes more so later files land in the gaps (fragmented), deletes some of those too, then
-runs `photorecover recover` and compares what came out with what was deleted.
+runs `photolifeboat recover` and compares what came out with what was deleted.
 
     sudo python tools/real_layouts.py [WORKDIR] [layout ...]
 """
@@ -17,8 +17,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from photorecover.synth.photos import make_photo
-from photorecover.synth.videos import make_video
+from photolifeboat.synth.photos import make_photo
+from photolifeboat.synth.videos import make_video
 
 MB = 1 << 20
 
@@ -217,7 +217,7 @@ def run(work, name):
     img = work / f"{name}.img"
     out = work / f"{name} recovered"
     deleted, live, notes = layout(name, str(img))
-    r = subprocess.run([sys.executable, "-m", "photorecover", "recover", str(img), "--out", str(out), "--json"],
+    r = subprocess.run([sys.executable, "-m", "photolifeboat", "recover", str(img), "--out", str(out), "--json"],
                        capture_output=True, text=True)
     if r.returncode:
         return dict(layout=name, error=r.stderr[-2000:])

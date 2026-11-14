@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "photorecover"
+name = "photolifeboat"
 dynamic = ["version"]
 description = "Free tool that rescues deleted photos from memory cards, rebuilding fragmented ones instead of leaving grey boxes."
 readme = "README.md"
@@ -17,10 +17,10 @@ dev = ["pytest>=7"]
 window = ["pywebview>=5"]
 
 [project.scripts]
-photorecover = "photorecover.cli:main"
+photolifeboat = "photolifeboat.cli:main"
 
 [tool.setuptools.dynamic]
-version = { attr = "photorecover.__version__" }
+version = { attr = "photolifeboat.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

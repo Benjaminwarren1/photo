@@ -20,6 +20,6 @@ class OptionalBuildExt(build_ext):
 
 
 setup(
-    ext_modules=[Extension("photorecover._scan", ["src/photorecover/_scan.c"])],
+    ext_modules=[Extension("photolifeboat._scan", ["src/photolifeboat/_scan.c"])],
     cmdclass={"build_ext": OptionalBuildExt},
 )

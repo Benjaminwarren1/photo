@@ -1,4 +1,4 @@
-# Photo Recovery
+# Photo Lifeboat
 
 **Free software that gets deleted photos back from memory cards.**
 
@@ -27,10 +27,10 @@ card, but locking it keeps everything else from changing it too.
 
 ## How to use it (Windows 10 and 11)
 
-1. Download **PhotoRecovery-…-setup.exe** from the [latest release](../../releases/latest) and open it.
+1. Download **PhotoLifeboat-…-setup.exe** from the [latest release](../../releases/latest) and open it.
 2. Windows will probably show a blue box saying "Windows protected your PC". Click **More info**, then
    **Run anyway**. (See [Why does Windows warn me?](#why-does-windows-warn-me) below.)
-3. Click through the installer. It takes a few seconds and doesn't need an administrator. Photo Recovery
+3. Click through the installer. It takes a few seconds and doesn't need an administrator. Photo Lifeboat
    then opens, and you'll find it in the Start menu and on your desktop.
 4. Choose where your rescued photos should go: your **Pictures** folder, your **Desktop**, or somewhere else
    such as an external drive.
@@ -44,11 +44,11 @@ of the card.
 When it has finished, click **Open the folder** to see your photos. Once you're happy with them, the program
 offers to delete the copy of the card to free up the space.
 
-To remove the program later, uninstall **Photo Recovery** from Settings > Apps, like any other program. Your
+To remove the program later, uninstall **Photo Lifeboat** from Settings > Apps, like any other program. Your
 rescued photos are not touched.
 
 Rather not install anything? The release also has a **portable** zip: extract it and double-click
-**PhotoRecovery**.
+**PhotoLifeboat**.
 
 Mac and Linux versions are planned but not ready yet.
 
@@ -81,7 +81,7 @@ by type into the folders above. The report shows where each file used to be, in 
 
 Keep the memory card as it is, and don't save anything new to it, until you're sure you have everything you
 want. If something is missing, another recovery program may still find it, but only while the card stays
-untouched. That's why Photo Recovery copies the card first and only ever works from the copy.
+untouched. That's why Photo Lifeboat copies the card first and only ever works from the copy.
 
 ## Is it safe?
 
@@ -102,7 +102,7 @@ check fully and which it could not.
 
 Windows shows "Windows protected your PC" for any program that is new to it and has not been signed with a
 paid security certificate. It does not mean anything harmful was found: it means Windows doesn't know the
-program yet. Photo Recovery is not signed yet because a certificate costs money every year.
+program yet. Photo Lifeboat is not signed yet because a certificate costs money every year.
 
 We plan to get it signed, through SignPath's free signing for open-source projects or with the help of
 donations. Even after that, the warning fades only as more people download the program and Windows comes to
@@ -118,7 +118,7 @@ happened. Please don't attach your personal photos.
 
 ## Supporting the project
 
-Photo Recovery is free and always will be. Donations, if you want to give one, go towards a code-signing
+Photo Lifeboat is free and always will be. Donations, if you want to give one, go towards a code-signing
 certificate (so Windows stops showing its warning) and towards keeping the program maintained.
 *(Donation link coming soon.)*
 

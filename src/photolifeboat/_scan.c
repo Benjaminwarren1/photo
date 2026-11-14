@@ -1,4 +1,4 @@
-/* photorecover._scan: a resumable baseline-JPEG entropy decoder.
+/* photolifeboat._scan: a resumable baseline-JPEG entropy decoder.
  *
  * It decodes Huffman-coded scan data one MCU at a time and returns only the DC
  * value of every block, which is an exact 1/8-scale picture. Its state can be

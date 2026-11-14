@@ -7,15 +7,15 @@ from pathlib import Path
 FOOTER = """
 ## Download
 
-**Windows 10 and 11:** download `PhotoRecovery-{v}-setup.exe` below and open it. It installs in a few seconds,
-without needing an administrator, and adds Photo Recovery to the Start menu. Uninstall it from Settings > Apps
+**Windows 10 and 11:** download `PhotoLifeboat-{v}-setup.exe` below and open it. It installs in a few seconds,
+without needing an administrator, and adds Photo Lifeboat to the Start menu. Uninstall it from Settings > Apps
 like any other program.
 
 Windows may say "Windows protected your PC" because the program is not code-signed yet. Click **More info**,
 then **Run anyway**.
 
-Prefer not to install anything? `PhotoRecovery-{v}-windows-portable.zip` is the same program in a folder:
-extract it and double-click **PhotoRecovery**. `SHA256SUMS.txt` lets anyone check a download is the one built here.
+Prefer not to install anything? `PhotoLifeboat-{v}-windows-portable.zip` is the same program in a folder:
+extract it and double-click **PhotoLifeboat**. `SHA256SUMS.txt` lets anyone check a download is the one built here.
 
 Before you start: stop using the card that lost the photos. See the [README](https://github.com/Benjaminwarren1/photo#readme).
 """

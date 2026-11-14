@@ -1,8 +1,8 @@
 # PyInstaller recipe for the Windows build: one folder holding two programs that share their libraries.
-#   PhotoRecovery.exe      the windowed app people double-click (no console window)
-#   photorecover-cli.exe   the command line, also used by the app for helper jobs such as copying the card
+#   PhotoLifeboat.exe       the windowed app people double-click (no console window)
+#   photolifeboat-cli.exe   the command line, also used by the app for helper jobs such as copying the card
 # A folder, not a single self-extracting file: fewer antivirus false alarms and a faster start.
-# Build with:  pyinstaller --noconfirm --clean packaging/PhotoRecovery.spec
+# Build with:  pyinstaller --noconfirm --clean packaging/PhotoLifeboat.spec
 import os
 
 HERE = os.path.dirname(os.path.abspath(SPEC))  # noqa: F821 - PyInstaller defines SPEC
@@ -16,8 +16,8 @@ pyz = PYZ(a.pure)  # noqa: F821
 gui = [s for s in a.scripts if s[0] == "gui"]
 cli = [s for s in a.scripts if s[0] == "cli"]
 common = [s for s in a.scripts if s[0] not in ("gui", "cli")]
-app = EXE(pyz, common + gui, [], exclude_binaries=True, name="PhotoRecovery", console=False,  # noqa: F821
+app = EXE(pyz, common + gui, [], exclude_binaries=True, name="PhotoLifeboat", console=False,  # noqa: F821
           upx=False, version=VERSION, icon=ICON if os.path.exists(ICON) else None)
-cmd = EXE(pyz, common + cli, [], exclude_binaries=True, name="photorecover-cli", console=True,  # noqa: F821
+cmd = EXE(pyz, common + cli, [], exclude_binaries=True, name="photolifeboat-cli", console=True,  # noqa: F821
           upx=False, version=VERSION, icon=ICON if os.path.exists(ICON) else None)
-COLLECT(app, cmd, a.binaries, a.datas, upx=False, name="PhotoRecovery")  # noqa: F821
+COLLECT(app, cmd, a.binaries, a.datas, upx=False, name="PhotoLifeboat")  # noqa: F821

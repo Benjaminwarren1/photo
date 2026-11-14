@@ -363,7 +363,7 @@ def _window(session: Session, url: str) -> bool:
     except Exception:  # noqa: BLE001
         return False
     try:
-        win = webview.create_window("Photo Recovery", url, width=820, height=640, min_size=(560, 480),
+        win = webview.create_window("Photo Lifeboat", url, width=820, height=640, min_size=(560, 480),
                                     background_color="#F3F3F3", text_select=True)
     except Exception:  # noqa: BLE001
         return False
@@ -396,8 +396,8 @@ def _window(session: Session, url: str) -> bool:
             win.destroy()
 
     def watch():
-        if os.environ.get("PHOTORECOVER_SMOKE_WINDOW"):
-            threading.Thread(target=smoke_test, args=(os.environ["PHOTORECOVER_SMOKE_WINDOW"],), daemon=True).start()
+        if os.environ.get("PHOTOLIFEBOAT_SMOKE_WINDOW"):
+            threading.Thread(target=smoke_test, args=(os.environ["PHOTOLIFEBOAT_SMOKE_WINDOW"],), daemon=True).start()
         # Closing the window while the card is being copied or recovered would lose the work, so ask first,
         # but only then: nobody should be asked "are you sure?" after it has finished.
         while not closed.is_set():
@@ -407,7 +407,7 @@ def _window(session: Session, url: str) -> bool:
     closed = threading.Event()
     win.events.closed += closed.set
     PICKER, QUIT = picker, win.destroy
-    words = {"global.quitConfirmation": "Photo Recovery is still working. If you close it now, the rescue stops "
+    words = {"global.quitConfirmation": "Photo Lifeboat is still working. If you close it now, the rescue stops "
                                         "and you will need to start again. Close anyway?",
              "global.ok": "Close", "global.cancel": "Keep working"}
     try:
@@ -425,7 +425,7 @@ def run(open_browser: bool = True) -> int:
     token = secrets.token_urlsafe(16)
     srv = make_server(session, token)
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={token}"
-    if open_browser and not os.environ.get("PHOTORECOVER_BROWSER"):
+    if open_browser and not os.environ.get("PHOTOLIFEBOAT_BROWSER"):
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         if _window(session, url):
             srv.shutdown()
@@ -434,7 +434,7 @@ def run(open_browser: bool = True) -> int:
         srv = make_server(session, token)
         url = f"http://127.0.0.1:{srv.server_address[1]}/?t={token}"
     if sys.stdout is not None:
-        print(f"photorecover is running. If your browser did not open, go to:\n  {url}\nClose this window to stop.", flush=True)
+        print(f"Photo Lifeboat is running. If your browser did not open, go to:\n  {url}\nClose this window to stop.", flush=True)
     if open_browser:
         threading.Timer(0.3, lambda: webbrowser.open(url)).start()
     try:

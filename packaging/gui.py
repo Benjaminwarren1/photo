@@ -1,5 +1,5 @@
-"""Entry point for PhotoRecovery.exe, the windowed program people double-click. It has no console window,
-so it always starts the wizard; the command line is photorecover-cli.exe beside it."""
+"""Entry point for PhotoLifeboat.exe, the windowed program people double-click. It has no console window,
+so it always starts the wizard; the command line is photolifeboat-cli.exe beside it."""
 import os
 import sys
 
@@ -9,7 +9,7 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
-from photorecover import wizard  # noqa: E402
+from photolifeboat import wizard  # noqa: E402
 
 if __name__ == "__main__":
     sys.exit(wizard.run())

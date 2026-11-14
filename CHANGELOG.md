@@ -5,7 +5,8 @@ the section into the GitHub release notes, and refuses to publish a version that
 
 ## Unreleased
 
-- Photo Recovery now opens in a window of its own, like any other Windows program, instead of a black
+- The program has a proper name: **Photo Lifeboat**.
+- Photo Lifeboat now opens in a window of its own, like any other Windows program, instead of a black
   command window and a web browser. It has a new look to match Windows 11, and follows light or dark mode.
 - A proper installer: Start menu entry, desktop icon, and uninstall from Settings > Apps. No administrator
   needed to install. A portable zip is still available.

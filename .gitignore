@@ -31,7 +31,7 @@ MANIFEST
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
-!packaging/PhotoRecovery.spec
+!packaging/PhotoLifeboat.spec
 
 # Installer logs
 pip-log.txt
@@ -220,7 +220,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# photorecover: never commit disk images, recovered output or real photos
+# photolifeboat: never commit disk images, recovered output or real photos
 *.img
 *.dd
 *.raw
@@ -234,4 +234,4 @@ __marimo__/
 *.3gp
 *.mov
 Recovered*/
-*.photorecover/
+*.photolifeboat/

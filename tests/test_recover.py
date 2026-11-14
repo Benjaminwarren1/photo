@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from photorecover.output import FOLDER_OK
-from photorecover.recover import Recovery
-from photorecover.synth.scenarios import used_card
+from photolifeboat.output import FOLDER_OK
+from photolifeboat.recover import Recovery
+from photolifeboat.synth.scenarios import used_card
 
 CARDS = {
     "fat16-4k": dict(fat_type=16, cluster_size=4096, size_mb=64, seed=1),
@@ -127,8 +127,8 @@ def test_exfat_fragmented_video_follows_surviving_chain(tmp_path):
     """exFAT keeps a deleted file's chain, so even a fragmented video comes back whole."""
     import os
     import struct
-    from photorecover.synth.exfatbuilder import ExFatBuilder
-    from photorecover.synth.photos import make_photo
+    from photolifeboat.synth.exfatbuilder import ExFatBuilder
+    from photolifeboat.synth.photos import make_photo
     b = ExFatBuilder(64, 32768)
     for i in range(4):
         b.write(f"DCIM/A{i}.JPG", make_photo(900 + i, 800, 600))
@@ -151,8 +151,8 @@ def test_exfat_fragmented_video_follows_surviving_chain(tmp_path):
 def test_exfat_video_with_a_real_index_is_frame_checked_and_an_overwritten_one_is_not_passed(tmp_path):
     """On exFAT the card still records where a deleted video lay. That is not proof its contents
     survive: the frames are checked, and a clip whose data was overwritten is not called verified."""
-    from photorecover.synth.exfatbuilder import ExFatBuilder
-    from photorecover.synth.videos import make_video
+    from photolifeboat.synth.exfatbuilder import ExFatBuilder
+    from photolifeboat.synth.videos import make_video
     b = ExFatBuilder(64, 32768)
     good, hurt = make_video(121, frames=90, moov_first=True), make_video(122, frames=90, moov_first=True)
     b.write("DCIM/GOOD.MP4", good)
@@ -172,7 +172,7 @@ def test_gif_and_png_are_checked_by_their_contents(tmp_path):
     replaced must not be saved as good."""
     import io
     from PIL import Image
-    from photorecover.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.fatbuilder import FatBuilder
     rng = np.random.default_rng(6)
     pix = rng.integers(0, 256, (240, 320, 3), dtype=np.uint8)
     files = {}
@@ -197,9 +197,9 @@ def test_gif_and_png_are_checked_by_their_contents(tmp_path):
 @pytest.mark.parametrize("moov_first", [False, True])
 def test_fragmented_videos_on_fat(tmp_path, moov_first):
     """FAT wipes a deleted file's chain, so videos are rebuilt from their own index."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
-    from photorecover.synth.videos import make_video
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
+    from photolifeboat.synth.videos import make_video
     b = FatBuilder(96, 16, 16384)
     for i in range(16):
         b.write(f"DCIM/IMG_{i:04d}.JPG", make_photo(700 + i, 1024, 768))
@@ -220,9 +220,9 @@ def test_fragmented_videos_on_fat(tmp_path, moov_first):
 def test_video_with_sparse_checkpoints_is_never_wrongly_verified(tmp_path):
     """Big frames and no sound leave clusters with nothing to check. The tool may then be
     unsure where two pieces join, but it must say so rather than call the video verified."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
-    from photorecover.synth.videos import make_video
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
+    from photolifeboat.synth.videos import make_video
     b = FatBuilder(96, 16, 4096)
     for i in range(16):
         b.write(f"DCIM/IMG_{i:04d}.JPG", make_photo(800 + i, 1024, 768))
@@ -253,7 +253,7 @@ def test_progressive_photos_whole_only_and_never_wrong(tmp_path):
 def test_close_calls_can_be_decided_by_a_person(tmp_path):
     """When the tool will not decide a join itself, a person chooses from pictures. Choosing
     the right piece each time must finish the photo exactly, and the pictures must be real."""
-    from photorecover.items import GRADE_REVIEW
+    from photolifeboat.items import GRADE_REVIEW
     b = used_card(**CARDS["fat16-16k"])
     b.delete_all()
     rec = run(tmp_path, b)
@@ -262,7 +262,7 @@ def test_close_calls_can_be_decided_by_a_person(tmp_path):
     # rebuilder told to leave each join to a person.
     rec._avail[:] = ~rec.vol.allocated() & ~rec.vol.blank_clusters()
     rec._rb.always_ask = True
-    from photorecover.cli import pilot_command
+    from photolifeboat.cli import pilot_command
     finished = piloted = 0
     for idx, it in enumerate(rec.items):
         t = truth.get((it.start, it.size))
@@ -302,7 +302,7 @@ def test_close_calls_can_be_decided_by_a_person(tmp_path):
 def _reformat(old, fat_type, cluster_size):
     """What formatting a used card with other settings does: a new, empty file system is
     written over the front of the card, and everything further in is left as it was."""
-    from photorecover.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.fatbuilder import FatBuilder
     new = FatBuilder(old.size >> 20, fat_type, cluster_size)
     img = bytearray(old.tobytes())
     front = new.data_off + (new.cl if fat_type == 32 else 0)
@@ -342,8 +342,8 @@ def test_card_reformatted_with_different_settings(tmp_path, deleted_first, folde
 def test_photo_saved_twice_is_not_a_close_call(tmp_path):
     """Two copies of one photo put identical bytes in two places. Either copy is a correct
     continuation, so that must not be sent to a person as if it were a hard choice."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
     b = FatBuilder(64, 16, 8192)
     b.mkdir("DCIM")
     twin = make_photo(555, 1600, 1200)
@@ -402,8 +402,8 @@ def test_final_check_fails_a_photo_whose_larger_part_is_another_picture():
     not become the yardstick."""
     import io
     from PIL import Image
-    from photorecover.checks import audit_jpeg, first_bad_band
-    from photorecover.synth.photos import _exif_with_thumbnail, draw_scene
+    from photolifeboat.checks import audit_jpeg, first_bad_band
+    from photolifeboat.synth.photos import _exif_with_thumbnail, draw_scene
     real, other = draw_scene(71, 1200, 1600), draw_scene(72, 1200, 1600, dark=True)
     th = real.copy()
     th.thumbnail((120, 160), Image.BILINEAR)
@@ -429,8 +429,8 @@ def test_card_reformatted_then_used_again_gives_back_both_layers(tmp_path, new_p
     """Seen on a real card: formatted with new settings, used again, and those newer photos
     deleted. The newer photos are listed in the format the card has now; the older ones can only
     be read the way the card used to be laid out. Both must come back, whichever layer is bigger."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
     old = used_card(fat_type=16, cluster_size=16384, size_mb=128, base_cluster=1500, folder_at_base=True)
     old.delete_all()
     new = FatBuilder(old.size >> 20, 32, 4096)
@@ -465,10 +465,10 @@ def test_an_answer_says_which_free_clusters_it_relied_on():
     a second cluster, that includes the second cluster, even when the photo then fails. Seen on a
     reformatted card, where two folder entries started at the same cluster and the run's answer
     for the second depended on whether the first had been taken yet."""
-    from photorecover.fat import open_volume
-    from photorecover.rebuild import Rebuilder
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
+    from photolifeboat.fat import open_volume
+    from photolifeboat.rebuild import Rebuilder
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
     b = FatBuilder(16, 16, 512)
     b.mkdir("DCIM")
     t = b.write("DCIM/A.JPG", make_photo(11, 320, 240))
@@ -490,8 +490,8 @@ def test_an_answer_says_which_free_clusters_it_relied_on():
 def test_overwritten_photo_is_not_saved_as_part_of_the_photo_that_replaced_it(tmp_path, in_pieces):
     """Seen on a real card: a deleted photo's space was reused by a later, bigger photo that begins
     at the same place. Its folder entry survives, but what is there now is the later photo."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
     b = FatBuilder(64, 16, 4096)
     b.mkdir("DCIM")
     b.write("DCIM/KEEP_0.JPG", make_photo(80, 800, 600))
@@ -518,9 +518,9 @@ def test_pngs_and_videos_with_no_folder_entry_are_found(tmp_path):
     import io
     import random
     from PIL import Image
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
-    from photorecover.synth.videos import make_video
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
+    from photolifeboat.synth.videos import make_video
     b = FatBuilder(96, 16, 8192)
     rnd = random.Random(5)
     buf = io.BytesIO()
@@ -587,7 +587,7 @@ def test_files_in_an_unreadable_part_of_a_failing_card_are_never_passed_off_as_g
     """Copy a card that has bad patches (simulated), then recover from the copy: photos clear of
     the bad patches come back as usual, and none that touches one lands in Recovered."""
     import json
-    from photorecover import device
+    from photolifeboat import device
     b = used_card(fat_type=16, cluster_size=8192, size_mb=64, seed=51, photos=16)
     b.delete_all()
     card = tmp_path / "card.bin"
@@ -598,7 +598,7 @@ def test_files_in_an_unreadable_part_of_a_failing_card_are_never_passed_off_as_g
         mid = b.cluster_off(t.clusters[len(t.clusters) // 2])
         bad.append([mid, mid + 512])
     (tmp_path / "plan.json").write_text(json.dumps(dict(bad=bad)))
-    monkeypatch.setenv("PHOTORECOVER_FAULTS", str(tmp_path / "plan.json"))
+    monkeypatch.setenv("PHOTOLIFEBOAT_FAULTS", str(tmp_path / "plan.json"))
     device._Faulty.opens, device._Faulty.counts = 0, {}
     info = device.clone(str(card), tmp_path / "copy" / "card.img")
     assert info["state"] == "done" and info["bad_bytes"] == 3 * 512
@@ -658,8 +658,8 @@ def test_card_that_windows_says_needs_formatting(tmp_path, fat_type, wipe):
 def test_files_never_deleted_are_reported_and_saved_when_the_card_will_not_open(tmp_path, damaged):
     """Seen on a real card: nothing lost could be recovered, but 23 photos were sitting on it as
     normal files, and the report said nothing about them to someone about to format it."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
     b = FatBuilder(64, 32, 4096)
     b.mkdir("DCIM")
     kept = {f"KEEP_{i}.JPG": make_photo(900 + i, 800, 600) for i in range(5)}
@@ -816,8 +816,8 @@ def test_files_from_deleted_folders_keep_their_whole_path(tmp_path, zero_high):
     """Seen on a real card: everything deleted, folders included. Files several folders deep were
     all saved into one folder, where equal names collided. Each lost folder still records its
     parent, so the whole path can be rebuilt."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
     b = FatBuilder(96, 32, 512, zero_high_on_delete=zero_high)
     b.next_free = 70000 if zero_high else b.next_free
     pics = [make_photo(9100 + i, 640, 480) for i in range(4)]
@@ -854,7 +854,7 @@ def test_files_from_deleted_folders_keep_their_whole_path(tmp_path, zero_high):
 def _raw_file(seed: int, make: bytes = b"NIKON CORPORATION", order: str = ">") -> bytes:
     """A camera RAW file in miniature: TIFF tables, a JPEG preview, and a block of sensor data."""
     import struct
-    from photorecover.synth.photos import make_photo
+    from photolifeboat.synth.photos import make_photo
     preview = make_photo(seed, 320, 240, preview=False)
     raw = np.random.default_rng(seed).integers(0, 256, 300_000, dtype=np.uint8).tobytes()
     e = order
@@ -880,7 +880,7 @@ def _raw_file(seed: int, make: bytes = b"NIKON CORPORATION", order: str = ">") -
 def _mpo_file(seed: int) -> bytes:
     """A 3D photo: two JPEGs in one file, with the index a camera writes into the first."""
     import struct
-    from photorecover.synth.photos import make_photo
+    from photolifeboat.synth.photos import make_photo
     a, b = make_photo(seed, 640, 480, preview=False), make_photo(seed + 1, 640, 480, preview=False)
     body = b"MPF\0II*\0" + struct.pack("<I", 8) + struct.pack("<H", 3) \
         + struct.pack("<HHI4s", 0xB000, 7, 4, b"0100") + struct.pack("<HHII", 0xB001, 4, 1, 2) \
@@ -896,8 +896,8 @@ def _mpo_file(seed: int) -> bytes:
 def test_camera_raw_files_and_3d_photos(tmp_path):
     """RAW files are checked by their own tables and built-in previews, a 3D photo by each picture
     in it, and a RAW file whose folder entry is gone is still found, whole, by scanning."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
     b = FatBuilder(96, 32, 4096)
     files = {"DCIM/100NIKON/DSC_0001.NEF": _raw_file(91), "DCIM/100NIKON/DSC_0002.CR2": _raw_file(92, b"Canon", "<"),
              "DCIM/100NIKON/DSC_0003.MPO": _mpo_file(93), "DCIM/100NIKON/DSC_0004.JPG": make_photo(95, 800, 600)}
@@ -930,9 +930,9 @@ def test_camera_raw_files_and_3d_photos(tmp_path):
 def test_motion_photo_says_its_video_is_whole(tmp_path):
     """Phones store a short video after the picture, in the same .jpg. The picture is checked as
     usual, and the report says whether the video behind it is whole."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
-    from photorecover.synth.videos import make_video
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
+    from photolifeboat.synth.videos import make_video
     b = FatBuilder(64, 16, 4096)
     good = make_photo(101, 800, 600) + make_video(102, frames=40, moov_first=True)
     bad = bytearray(make_photo(103, 800, 600) + make_video(104, frames=40, moov_first=True))
@@ -958,9 +958,9 @@ def test_motion_photo_says_its_video_is_whole(tmp_path):
 def test_recording_the_camera_never_finished_is_kept_and_explained(tmp_path):
     """Battery died mid-recording: the video data is on the card with no index and no folder entry.
     It cannot be checked or played as it is, so it is kept as Partial with a plain explanation."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
-    from photorecover.synth.videos import make_video
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
+    from photolifeboat.synth.videos import make_video
     whole = make_video(111, frames=150, moov_first=False)
     cut = bytearray(whole[:whole.index(b"moov") - 4])
     at = cut.index(b"mdat") - 4
@@ -990,9 +990,9 @@ def test_recording_the_camera_never_finished_is_kept_and_explained(tmp_path):
 def test_one_malformed_file_never_stops_the_run(tmp_path, monkeypatch):
     """A 3D photo whose list of pictures is cut short, and a file whose check blows up outright:
     each is noted, everything else is still recovered, and the report is still written."""
-    from photorecover import recover as rmod
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
+    from photolifeboat import recover as rmod
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
     good = make_photo(131, 800, 600)
     mpo = bytearray(_mpo_file(132))
     at = mpo.index(b"MPF\0")
@@ -1019,8 +1019,8 @@ def test_a_full_output_drive_is_said_plainly_and_leaves_no_cut_short_file(tmp_pa
     """The drive being saved to fills up part way: what was saved stays, nothing half-written is
     left behind, the rest is marked as not saved, and the run ends with a plain explanation."""
     import errno
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
     b = FatBuilder(64, 16, 4096)
     for n in range(6):
         b.write(f"DCIM/P{n}.JPG", make_photo(140 + n, 800, 600))
@@ -1056,8 +1056,8 @@ def _wipe_folder(b, name="DCIM"):
 def test_avi_and_stream_video_listed_in_a_folder(tmp_path):
     """AVI is checked frame by frame against its own index; a transport stream (dashcam, camcorder)
     has no index, so it is never called verified; and one whose middle was overwritten is not passed."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.videos import make_avi, make_ts
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.videos import make_avi, make_ts
     b = FatBuilder(96, 16, 8192)
     files = {"DCIM/A.AVI": make_avi(1), "DCIM/NOINDEX.AVI": make_avi(2, index=False),
              "DCIM/CAM.MTS": make_ts(3, m2ts=True), "DCIM/DASH.TS": make_ts(4)}
@@ -1086,8 +1086,8 @@ def test_avi_and_stream_video_with_no_folder_entry(tmp_path):
     """With the folder gone: a whole AVI vouches for itself through its index, a recording from its
     beginning is kept unverified, a cut-off AVI and the tail of an overwritten stream are kept as
     partial, and nothing is saved twice."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.videos import make_avi, make_ts
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.videos import make_avi, make_ts
     b = FatBuilder(96, 16, 8192)
     avi, ts, cut = make_avi(11), make_ts(12), make_avi(13, finished=False)
     old, new = make_ts(14, packets=15000), make_ts(17, packets=6001)
@@ -1115,8 +1115,8 @@ def test_avi_and_stream_video_with_no_folder_entry(tmp_path):
 def test_stream_video_whose_count_jumps_is_kept_with_the_doubt_said(tmp_path):
     """A listed stream whose packets line up but whose running count jumps part way (a glitch, or
     a later clip written over it): never thrown away on that, never called verified, and told."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.videos import make_ts
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.videos import make_ts
     b = FatBuilder(64, 16, 8192)
     spliced = make_ts(7)[:188 * 6000] + make_ts(8)[188 * 6000:]
     b.write("DCIM/SPLICE.MTS", spliced)
@@ -1130,9 +1130,9 @@ def test_stream_video_whose_count_jumps_is_kept_with_the_doubt_said(tmp_path):
 def test_results_are_sorted_by_kind_and_small_pictures_kept_apart(tmp_path):
     """Photos, videos, documents and music each get a folder; the card's own folders are not
     rebuilt; and thumbnails and app pictures do not bury the photos."""
-    from photorecover.synth.fatbuilder import FatBuilder
-    from photorecover.synth.photos import make_photo
-    from photorecover.synth.videos import make_video
+    from photolifeboat.synth.fatbuilder import FatBuilder
+    from photolifeboat.synth.photos import make_photo
+    from photolifeboat.synth.videos import make_video
     b = FatBuilder(64, 16, 4096)
     b.mkdir("DCIM/100CAM")
     b.mkdir("Android/data/gamefeed")

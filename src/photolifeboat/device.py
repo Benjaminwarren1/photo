@@ -45,7 +45,7 @@ def _powershell(cmd: str) -> str:
 
 def list_drives() -> list[Drive]:
     """Whole physical drives currently attached (not partitions or drive letters)."""
-    fake = os.environ.get("PHOTORECOVER_FAKE_DRIVES")       # tests: a folder of *.img files acts as the drives
+    fake = os.environ.get("PHOTOLIFEBOAT_FAKE_DRIVES")       # tests: a folder of *.img files acts as the drives
     if fake:
         return [Drive(p.stem, str(p), p.stat().st_size, p.stem, True, False) for p in sorted(Path(fake).glob("*.img"))]
     out: list[Drive] = []
@@ -242,7 +242,7 @@ class _Faulty:
 
 
 def _open_source(source: str):
-    plan = os.environ.get("PHOTORECOVER_FAULTS")       # tests: a JSON file describing a failing card
+    plan = os.environ.get("PHOTOLIFEBOAT_FAULTS")       # tests: a JSON file describing a failing card
     if plan:
         return _Faulty(source, json.loads(Path(plan).read_text()))
     return open(source, "rb", buffering=0)
@@ -520,14 +520,14 @@ def is_admin() -> bool:
 def self_command() -> list[str]:
     """How to start this program again for a helper job (works both as an .exe and from source).
 
-    The Windows build has two programs side by side: PhotoRecovery.exe, the windowed app with no console, and
-    photorecover-cli.exe, the command-line one. Helpers write to standard output, which a windowed program
+    The Windows build has two programs side by side: PhotoLifeboat.exe, the windowed app with no console, and
+    photolifeboat-cli.exe, the command-line one. Helpers write to standard output, which a windowed program
     does not have, so they always run the command-line one when it is there."""
     if getattr(sys, "frozen", False):
         exe = Path(sys.executable)
-        cli = exe.with_name("photorecover-cli" + exe.suffix)
+        cli = exe.with_name("photolifeboat-cli" + exe.suffix)
         return [str(cli if cli.is_file() else exe)]
-    return [sys.executable, "-m", "photorecover"]
+    return [sys.executable, "-m", "photolifeboat"]
 
 
 def known_folder(which: str) -> Path:
@@ -569,7 +569,7 @@ def start_clone(drive: Drive, dest: Path, status_file: Path) -> None:
     administrator rights, so only this helper asks for them (one UAC prompt)."""
     cmd = self_command() + ["clone", drive.path, str(dest), "--size", str(drive.size), "--status", str(status_file)]
     Path(status_file).write_text(json.dumps(dict(state="starting", done=0, total=drive.size)))
-    if sys.platform == "win32" and not is_admin() and not os.environ.get("PHOTORECOVER_FAKE_DRIVES"):
+    if sys.platform == "win32" and not is_admin() and not os.environ.get("PHOTOLIFEBOAT_FAKE_DRIVES"):
         import ctypes
         params = subprocess.list2cmdline(cmd[1:])
         rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", cmd[0], params, None, 0)

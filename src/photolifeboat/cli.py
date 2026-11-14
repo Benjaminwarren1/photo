@@ -1,10 +1,10 @@
 """Command line.
 
-photorecover                      start the wizard (also what double-clicking the .exe does)
-photorecover recover IMAGE        recover from a card image; --json prints a machine-readable summary
-photorecover pilot IMAGE          recover, then take close-call decisions as JSON lines (for another program)
-photorecover drives               list attached drives
-photorecover clone SOURCE DEST    copy a card to an image file (used by the wizard, needs admin rights)
+photolifeboat                     start the wizard (also what double-clicking the .exe does)
+photolifeboat recover IMAGE       recover from a card image; --json prints a machine-readable summary
+photolifeboat pilot IMAGE         recover, then take close-call decisions as JSON lines (for another program)
+photolifeboat drives              list attached drives
+photolifeboat clone SOURCE DEST   copy a card to an image file (used by the wizard, needs admin rights)
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from .recover import Recovery
 
 
 def _parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="photorecover",
+    ap = argparse.ArgumentParser(prog="photolifeboat",
                                  description="Rescue deleted photos from a memory card image. The image is never changed.")
     ap.add_argument("--version", action="version", version=__version__)
     sub = ap.add_subparsers(dest="cmd")
@@ -62,7 +62,7 @@ def main(argv=None) -> int:
 
 
 def _check(a) -> int:
-    """photorecover check FILES: the final check, on photo files a person already has."""
+    """photolifeboat check FILES: the final check, on photo files a person already has."""
     from .checks import audit_jpeg
     worst = 0
     for f in a.files:
@@ -77,7 +77,7 @@ def _check(a) -> int:
 
 
 def _drives(a) -> int:
-    """photorecover drives: the drives attached to this computer."""
+    """photolifeboat drives: the drives attached to this computer."""
     from . import device
     for d in device.list_drives():
         kind = "system" if d.system else "removable" if d.removable else "fixed"
@@ -86,7 +86,7 @@ def _drives(a) -> int:
 
 
 def _clone(a) -> int:
-    """photorecover clone SOURCE DEST: copy a card (or a file) into an image. With --status, the
+    """photolifeboat clone SOURCE DEST: copy a card (or a file) into an image. With --status, the
     wizard is watching through that file; without it, a person is watching the screen."""
     from . import device
     quiet = bool(a.status)
@@ -142,7 +142,7 @@ def _clone_as_admin(a, known, quiet: bool, show) -> int:
     import tempfile
     import time
     from . import device
-    status = Path(a.status) if quiet else Path(tempfile.gettempdir()) / f"photorecover-clone-{os.getpid()}.json"
+    status = Path(a.status) if quiet else Path(tempfile.gettempdir()) / f"photolifeboat-clone-{os.getpid()}.json"
     device.start_clone(known, a.dest, status)
     info = {}
     while True:
@@ -162,7 +162,7 @@ def _clone_as_admin(a, known, quiet: bool, show) -> int:
 
 
 def _pick(a) -> int:
-    """photorecover pick file|folder: show the system's file or folder chooser, print the choice."""
+    """photolifeboat pick file|folder: show the system's file or folder chooser, print the choice."""
     import tkinter
     from tkinter import filedialog
     root = tkinter.Tk()
@@ -175,7 +175,7 @@ def _pick(a) -> int:
 
 
 def _recover(a) -> int:
-    """photorecover recover IMAGE (and pilot IMAGE): recover everything possible from a card image."""
+    """photolifeboat recover IMAGE (and pilot IMAGE): recover everything possible from a card image."""
     if not a.image.is_file():
         print(f"Cannot find the image file: {a.image}", file=sys.stderr)
         return 2

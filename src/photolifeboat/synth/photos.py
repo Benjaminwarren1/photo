@@ -50,7 +50,7 @@ def draw_scene(seed: int, width: int = 1600, height: int = 1200, dark: bool = Fa
 def _exif_with_thumbnail(thumb: bytes, orientation: int = 1) -> bytes:
     """A minimal little-endian EXIF block: IFD0 (Make, Model, Orientation) and
     IFD1 holding a JPEG thumbnail, laid out the way cameras write it."""
-    make, model = b"photorecover\0", b"synthetic\0\0"
+    make, model = b"photolifeboat\0", b"synthetic\0\0"
     ifd0_n, ifd1_n = 3, 3
     ifd0_off = 8
     ifd0_len = 2 + ifd0_n * 12 + 4
