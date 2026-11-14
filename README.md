@@ -139,7 +139,7 @@ their code. It's a separate program that does these jobs together, behind one si
 ## Made almost entirely by AI
 
 We want to be upfront about this. Nearly all of Photo Lifeboat (the program, its tests and this page) was
-written by Claude, an AI made by Anthropic. A person decided what it should do, tried it out on real cards and
+written by Claude, an AI made by Anthropic. Ben decided what it should do, tried it out on real cards and
 made the decisions along the way, but the AI did the writing.
 
 AI can get things wrong, just as people can, so the program is built to be careful:
