@@ -9,6 +9,9 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+#ifndef AppNumVersion
+  #define AppNumVersion "0.0.0.0"
+#endif
 #ifndef SourceDir
   #define SourceDir "..\dist\PhotoRecovery"
 #endif
@@ -26,7 +29,7 @@ AppPublisherURL=https://github.com/Benjaminwarren1/photo
 AppSupportURL=https://github.com/Benjaminwarren1/photo/issues
 AppUpdatesURL=https://github.com/Benjaminwarren1/photo/releases
 AppCopyright=GPL-3.0-or-later
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#AppNumVersion}
 VersionInfoDescription=Photo Recovery installer
 DefaultDirName={localappdata}\Programs\Photo Recovery
 DefaultGroupName=Photo Recovery

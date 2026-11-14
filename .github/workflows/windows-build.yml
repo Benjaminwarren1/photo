@@ -28,6 +28,7 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then v=$(python packaging/make_version_info.py --check-tag "$GITHUB_REF"); else v=$(python packaging/make_version_info.py); fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "numeric=$(python packaging/make_version_info.py --numeric)" >> "$GITHUB_OUTPUT"
       # Two programs in one folder (the windowed app and the command line), described in the spec file.
       - run: pyinstaller --noconfirm --clean packaging/PhotoRecovery.spec
       - name: Smoke test the packaged program on a synthetic card
@@ -54,7 +55,7 @@ jobs:
             if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
             $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6"
           }
-          iscc /Q "/DAppVersion=${{ steps.version.outputs.version }}" "/DSourceDir=$PWD\dist\PhotoRecovery" "/DOutputDir=$PWD" packaging\installer.iss
+          iscc /Q "/DAppVersion=${{ steps.version.outputs.version }}" "/DAppNumVersion=${{ steps.version.outputs.numeric }}" "/DSourceDir=$PWD\dist\PhotoRecovery" "/DOutputDir=$PWD" packaging\installer.iss
           if ($LASTEXITCODE -ne 0) { throw "The installer could not be built" }
           Get-ChildItem PhotoRecovery-*-setup.exe
       - name: Smoke test the installer (install, run, uninstall)

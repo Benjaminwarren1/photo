@@ -49,6 +49,9 @@ VSVersionInfo(
             print(f"Tag {tag} does not match the version in src/photorecover/__init__.py ({v}). "
                   f"Change __version__ to match, or tag v{v}.", file=sys.stderr)
             return 1
+    if "--numeric" in sys.argv:
+        print(".".join(str(x) for x in n))     # what installers want: four plain numbers
+        return 0
     print(v)
     return 0
 
