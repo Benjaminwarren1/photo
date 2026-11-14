@@ -221,3 +221,34 @@ def test_copy_never_empties_a_file_that_is_already_there(tmp_path):
     (tmp_path / "copy" / "card.img.map.json").write_text(json.dumps(progress))
     info = device.clone(str(src), part)
     assert info["state"] == "done" and part.read_bytes() == before
+
+
+def test_save_place_is_pictures_desktop_or_a_chosen_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(wizard.device, "known_folder", lambda which: tmp_path / which)
+    s = wizard.Session()
+    assert s.place == "pictures" and s.folder.parent == tmp_path / "pictures"
+    assert s.folder.name.startswith("Rescued photos ")
+    s.set_place("desktop")
+    assert s.place == "desktop" and s.folder.parent == tmp_path / "desktop"
+    s.set_place("other", None)                 # chooser cancelled: nothing changes
+    assert s.place == "desktop"
+    s.set_place("other", str(tmp_path / "usb"))
+    assert s.place == "other" and s.folder.parent == tmp_path / "usb"
+
+
+def test_delete_copy_only_removes_the_copy_this_program_made(tmp_path):
+    s = wizard.Session()
+    s.folder = tmp_path / "out"
+    s.folder.mkdir()
+    mine = s.folder / "card.img"
+    mine.write_bytes(b"x" * 10)
+    (s.folder / "card.img.sha256.txt").write_text("abc  card.img\n")
+    (s.folder / "Recovered").mkdir()
+    (s.folder / "Recovered" / "photo.jpg").write_bytes(b"jpg")
+    s.image = mine
+    s.delete_copy()                            # an image the person brought is never deleted
+    assert mine.exists()
+    s.made_copy = True
+    s.delete_copy()
+    assert not mine.exists() and not (s.folder / "card.img.sha256.txt").exists()
+    assert (s.folder / "Recovered" / "photo.jpg").exists() and s.copy_deleted
