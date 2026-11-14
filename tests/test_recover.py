@@ -776,6 +776,10 @@ def test_every_partition_on_a_card_is_recovered(tmp_path, table):
         want = [t for t in part.history if t.recoverable]
         assert want and all(t.sha256 in got for t in want), f"{sum(t.sha256 in got for t in want)} of {len(want)}"
     assert "partition 2" in (tmp_path / "out" / "report.html").read_text()
+    # One partition's folders are not an "older layout" of the other (seen with real formatting
+    # tools: the first partition's files were listed again as lost and not recoverable).
+    assert rec.summary.get("old_layout") is None, rec.summary["filesystem"]
+    assert not [it.name for it in rec.items if it.folder.startswith("_lost_folder")]
 
 
 @pytest.mark.parametrize("zero_high", [False, True])
