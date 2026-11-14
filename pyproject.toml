@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "photorecover"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "Free tool that rescues deleted photos from memory cards, rebuilding fragmented ones instead of leaving grey boxes."
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
@@ -13,9 +13,14 @@ dependencies = ["numpy>=1.24", "Pillow>=10"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+# Shows the wizard in a window of its own instead of the browser (the Windows build always includes it).
+window = ["pywebview>=5"]
 
 [project.scripts]
 photorecover = "photorecover.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "photorecover.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

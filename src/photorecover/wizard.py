@@ -1,8 +1,9 @@
 """The wizard: a small web page served only to this computer, which walks
 someone from "I plugged my card in" to a Recovered folder.
 
-The page talks to this process over 127.0.0.1 with a random token. Nothing is
-sent anywhere else.
+The page is shown in a window of its own (pywebview, which uses the web engine built into the system:
+Edge WebView2 on Windows), or in the browser if that is not available. Either way it talks to this
+process over 127.0.0.1 with a random token. Nothing is sent anywhere else.
 """
 from __future__ import annotations
 
@@ -23,17 +24,20 @@ from .recover import Recovery
 from .wizard_page import PAGE
 
 
-def default_folder() -> Path:
-    """Where the copy of the card and the results go unless the person chooses otherwise: next to
-    the program itself, so that nobody has to find or type a folder; the Desktop if that fails."""
-    name = time.strftime("Recovered %Y-%m-%d %H%M")
-    if getattr(sys, "frozen", False):
-        app = Path(sys.executable).resolve().parent
-        if os.access(app, os.W_OK):
-            return app / name
-    home = Path.home()
-    base = home / "Desktop" if (home / "Desktop").is_dir() else home
-    return base / ("Photo recovery " + name.partition(" ")[2])
+PLACES = ("pictures", "desktop")
+
+
+def default_folder(place: str = "pictures", base: Path | None = None) -> Path:
+    """Where the copy of the card and the results go: a new dated folder in the person's Pictures (the
+    default), on their Desktop, or in a folder they chose ("other" with base), so that nobody has to type
+    a folder path."""
+    name = time.strftime("Rescued photos %Y-%m-%d %H%M")
+    root = base if (place == "other" and base) else device.known_folder(place if place in PLACES else "pictures")
+    return root / name
+
+
+# Set by the window when there is one: shows the system's own folder or file chooser and returns the path.
+PICKER = None
 
 
 class Session:
@@ -43,7 +47,10 @@ class Session:
         self.before: list[device.Drive] = []
         self.found: list[device.Drive] = []
         self.drive: device.Drive | None = None
+        self.place = "pictures"        # pictures | desktop | other (the person's choice of where to save)
         self.folder: Path = default_folder()
+        self.made_copy = False          # the card.img in folder was made by this program (so it may offer to delete it)
+        self.copy_deleted = False
         self.image: Path | None = None
         self.status_file: Path | None = None
         self.message = ""
@@ -102,6 +109,31 @@ class Session:
         need = int(size * 1.02) + (64 << 20)        # the copy has to fit; what is recovered is usually far smaller
         return dict(free=free, need=need, ok=free >= need, tight=free < int(size * 1.5))
 
+    def set_place(self, place: str, folder: str | None = None):
+        """Where to save: "pictures", "desktop", or "other" with a folder the person picked."""
+        if place == "other":
+            if not folder:
+                return
+            self.place, self.folder = "other", default_folder("other", Path(folder))
+        elif place in PLACES:
+            self.place, self.folder = place, default_folder(place)
+        self.message = ""
+
+    def delete_copy(self):
+        """Delete the copy of the card once the person is happy with the results. Only ever the card.img this
+        program made in its own results folder, never an image file the person brought."""
+        if not (self.made_copy and self.image and self.image.parent == self.folder and self.image.name == "card.img"):
+            return
+        for f in (self.image, self.folder / "card.img.sha256.txt", self.folder / "card.img.bad.json"):
+            try:
+                f.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                self.message = f"The copy could not be deleted ({e.strerror}). It may be open in another program."
+                return
+        self.copy_deleted, self.rec = True, None    # the review needs the copy, so it ends here
+
     def start_clone(self, folder: str | None):
         if folder:
             self.folder = Path(folder)
@@ -121,6 +153,7 @@ class Session:
         self.folder.mkdir(parents=True, exist_ok=True)
         self.image = self.folder / "card.img"
         self.status_file = self.folder / "clone-status.json"
+        self.made_copy = True
         device.start_clone(self.drive, self.image, self.status_file)
         self.step, self.message = "cloning", ""
 
@@ -135,6 +168,7 @@ class Session:
             return
         self.image = p
         self.folder = p.with_name(p.stem + " recovered")
+        self.place = "other"
         self._recover()
 
     def poll_clone(self):
@@ -186,7 +220,7 @@ class Session:
             if self.step == "cloning":
                 self.poll_clone()
             s = dict(step=self.step, message=self.message, version=__version__, folder=str(self.folder),
-                     windows=sys.platform == "win32", beside=bool(getattr(sys, "frozen", False)) and self.folder.parent == Path(sys.executable).resolve().parent,
+                     windows=sys.platform == "win32", place=self.place, window=PICKER is not None,
                      can_resume=bool(getattr(self, "can_resume", False)),
                      found=[device.drive_dict(d) for d in self.found],
                      drive=device.drive_dict(self.drive) if self.drive else None)
@@ -203,12 +237,17 @@ class Session:
             if self.step == "done":
                 s["summary"] = self.summary
                 s["to_review"] = len(self.rec.review_queue()) if self.rec else 0
+                img = self.image if (self.made_copy and self.image and not self.copy_deleted) else None
+                s["copy"] = dict(size=img.stat().st_size if img and img.exists() else 0, deleted=self.copy_deleted,
+                                 offered=self.made_copy)
             return s
 
 
 def pick_path(kind: str) -> str:
-    """Show the system's own file or folder chooser (in a helper process, since
-    the chooser needs to own its main thread)."""
+    """Show the system's own file or folder chooser: the window's own when there is a window, otherwise
+    in a helper process, since the chooser needs to own its main thread."""
+    if PICKER is not None:
+        return PICKER(kind) or ""
     r = subprocess.run(device.self_command() + ["pick", kind], capture_output=True, text=True, timeout=600)
     return r.stdout.strip()
 
@@ -272,6 +311,10 @@ def make_server(session: Session, token: str, port: int = 0) -> ThreadingHTTPSer
                         session.choose(str(body.get("id", "")))
                     elif a == "set_folder":
                         session.folder = Path(str(body.get("folder") or session.folder))
+                    elif a == "set_place":
+                        session.set_place(str(body.get("place", "")), body.get("folder"))
+                    elif a == "delete_copy":
+                        session.delete_copy()
                     elif a == "start_clone":
                         session.start_clone(body.get("folder"))
                     elif a == "resume_clone":
@@ -291,9 +334,80 @@ def make_server(session: Session, token: str, port: int = 0) -> ThreadingHTTPSer
                             open_in_system(target)
                     elif a == "quit":
                         threading.Thread(target=self.server.shutdown, daemon=True).start()
+                        if QUIT is not None:
+                            QUIT()
             self._send(200, json.dumps(dict(session.state(), **extra)).encode())
 
     return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+
+
+QUIT = None       # set by the window: closes it
+
+
+def _window(session: Session, url: str) -> bool:
+    """Show the wizard in a window of its own. Returns False if no window can be made here (no pywebview,
+    or no web engine, such as a very old Windows 10 without WebView2), so the browser is used instead."""
+    global PICKER, QUIT
+    try:
+        import webview
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        win = webview.create_window("Photo Recovery", url, width=820, height=640, min_size=(560, 480),
+                                    background_color="#F3F3F3", text_select=True)
+    except Exception:  # noqa: BLE001
+        return False
+
+    def picker(kind: str) -> str:
+        try:
+            if kind == "folder":
+                got = win.create_file_dialog(webview.FileDialog.FOLDER)
+            else:
+                got = win.create_file_dialog(webview.FileDialog.OPEN, file_types=(
+                    "Card images (*.img;*.dd;*.raw;*.bin)", "All files (*.*)"))
+        except Exception:  # noqa: BLE001
+            return ""
+        if not got:
+            return ""
+        return str(got[0] if isinstance(got, (list, tuple)) else got)
+
+    def smoke_test(report: str):
+        # For the build checks: open the window, note what the page shows, and close again.
+        text = ""
+        try:
+            win.events.loaded.wait(60)
+            for _ in range(40):
+                text = win.evaluate_js("document.getElementById('view').innerText") or ""
+                if text.strip():
+                    break
+                time.sleep(0.5)
+        finally:
+            Path(report).write_text(text, encoding="utf-8")
+            win.destroy()
+
+    def watch():
+        if os.environ.get("PHOTORECOVER_SMOKE_WINDOW"):
+            threading.Thread(target=smoke_test, args=(os.environ["PHOTORECOVER_SMOKE_WINDOW"],), daemon=True).start()
+        # Closing the window while the card is being copied or recovered would lose the work, so ask first,
+        # but only then: nobody should be asked "are you sure?" after it has finished.
+        while not closed.is_set():
+            win.confirm_close = session.step in ("cloning", "recovering")
+            time.sleep(0.5)
+
+    closed = threading.Event()
+    win.events.closed += closed.set
+    PICKER, QUIT = picker, win.destroy
+    words = {"global.quitConfirmation": "Photo Recovery is still working. If you close it now, the rescue stops "
+                                        "and you will need to start again. Close anyway?",
+             "global.ok": "Close", "global.cancel": "Keep working"}
+    try:
+        webview.start(watch, localization=words, private_mode=True,
+                      gui="edgechromium" if sys.platform == "win32" else None)
+    except Exception:  # noqa: BLE001
+        PICKER = QUIT = None
+        return False
+    PICKER = QUIT = None
+    return True
 
 
 def run(open_browser: bool = True) -> int:
@@ -301,7 +415,16 @@ def run(open_browser: bool = True) -> int:
     token = secrets.token_urlsafe(16)
     srv = make_server(session, token)
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={token}"
-    print(f"photorecover is running. If your browser did not open, go to:\n  {url}\nClose this window to stop.", flush=True)
+    if open_browser and not os.environ.get("PHOTORECOVER_BROWSER"):
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        if _window(session, url):
+            srv.shutdown()
+            return 0
+        srv.shutdown()
+        srv = make_server(session, token)
+        url = f"http://127.0.0.1:{srv.server_address[1]}/?t={token}"
+    if sys.stdout is not None:
+        print(f"photorecover is running. If your browser did not open, go to:\n  {url}\nClose this window to stop.", flush=True)
     if open_browser:
         threading.Timer(0.3, lambda: webbrowser.open(url)).start()
     try:

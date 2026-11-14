@@ -513,10 +513,50 @@ def is_admin() -> bool:
 
 
 def self_command() -> list[str]:
-    """How to start this program again (works both as an .exe and from source)."""
+    """How to start this program again for a helper job (works both as an .exe and from source).
+
+    The Windows build has two programs side by side: PhotoRecovery.exe, the windowed app with no console, and
+    photorecover-cli.exe, the command-line one. Helpers write to standard output, which a windowed program
+    does not have, so they always run the command-line one when it is there."""
     if getattr(sys, "frozen", False):
-        return [sys.executable]
+        exe = Path(sys.executable)
+        cli = exe.with_name("photorecover-cli" + exe.suffix)
+        return [str(cli if cli.is_file() else exe)]
     return [sys.executable, "-m", "photorecover"]
+
+
+def known_folder(which: str) -> Path:
+    """The person's own Pictures or Desktop folder ("pictures" or "desktop"), wherever it really is.
+
+    On Windows this asks Windows, because OneDrive and company setups often move these folders away from
+    C:\\Users\\name\\Pictures. Falls back to the home folder if the folder does not exist."""
+    home = Path.home()
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            import uuid
+            from ctypes import wintypes
+            guid = {"pictures": "33E28130-4E1E-4676-835A-98395C3BC3BB",
+                    "desktop": "B4BFCC3A-DB2C-424C-B029-7FE99A87C641"}[which]
+
+            class GUID(ctypes.Structure):
+                _fields_ = [("bytes", ctypes.c_ubyte * 16)]
+
+            g = GUID()
+            ctypes.memmove(ctypes.byref(g), uuid.UUID(guid).bytes_le, 16)
+            out = ctypes.c_wchar_p()
+            shell32 = ctypes.windll.shell32
+            shell32.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE,
+                                                     ctypes.POINTER(ctypes.c_wchar_p)]
+            if shell32.SHGetKnownFolderPath(ctypes.byref(g), 0, None, ctypes.byref(out)) == 0:
+                path = Path(out.value)
+                ctypes.windll.ole32.CoTaskMemFree(out)
+                if path.is_dir():
+                    return path
+        except Exception:  # noqa: BLE001 - fall back to the usual place
+            pass
+    path = home / {"pictures": "Pictures", "desktop": "Desktop"}[which]
+    return path if path.is_dir() else home
 
 
 def start_clone(drive: Drive, dest: Path, status_file: Path) -> None:
