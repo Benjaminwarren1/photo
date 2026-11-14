@@ -33,7 +33,10 @@ Until your photos are rescued, also:
 - don't copy anything onto it.
 
 Each new photo can land on top of an old one, and a photo that has been written over is gone for good.
-No program anywhere can bring it back.
+No recovery program could bring it back.\*
+
+<sub>\* Your only remaining option would be an expensive specialist lab, and even then you might only get
+damaged photos back.</sub>
 
 > **Already formatted it?** Don't give up, it's still worth a try. The usual kind of format, on a camera, a
 > phone or Windows' Quick Format, usually only wipes the card's list of files and leaves the photos themselves in place.
