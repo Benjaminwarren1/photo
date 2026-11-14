@@ -252,3 +252,11 @@ def test_delete_copy_only_removes_the_copy_this_program_made(tmp_path):
     s.delete_copy()
     assert not mine.exists() and not (s.folder / "card.img.sha256.txt").exists()
     assert (s.folder / "Recovered" / "photo.jpg").exists() and s.copy_deleted
+
+
+def test_donate_link_opens_only_the_ko_fi_page(monkeypatch):
+    opened = []
+    monkeypatch.setattr(wizard.webbrowser, "open", opened.append)
+    monkeypatch.setattr(wizard, "open_in_system", lambda p: opened.append(p))
+    wizard.Session().act("open", {"what": "donate", "url": "https://example.com"})
+    assert opened == ["https://ko-fi.com/photolifeboat"]

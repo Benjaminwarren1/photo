@@ -117,6 +117,8 @@ class Session:
             return {"review": self.review_next()}
         elif action == "restart":
             self.__init__()
+        elif action == "open" and body.get("what") == "donate":
+            webbrowser.open(DONATE_URL)
         elif action == "open":
             target = self.folder / "report.html" if body.get("what") == "report" else self.folder
             if target.exists():
@@ -286,6 +288,9 @@ def pick_path(kind: str) -> str:
         return PICKER(kind) or ""
     r = subprocess.run(device.self_command() + ["pick", kind], capture_output=True, text=True, timeout=600)
     return r.stdout.strip()
+
+
+DONATE_URL = "https://ko-fi.com/photolifeboat"
 
 
 def open_in_system(path: Path) -> None:

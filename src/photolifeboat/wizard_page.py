@@ -23,6 +23,7 @@ footer.bar{display:flex;flex-direction:row-reverse;justify-content:flex-start;ga
 footer.bar:empty{display:none}
 button{font:inherit;font-size:.95rem;min-height:2rem;min-width:6rem;padding:.3rem 1rem;border-radius:4px;border:1px solid var(--stroke);border-bottom-color:var(--stroke2);background:var(--card);color:var(--ink);cursor:default}
 button:hover{background:var(--hover)}
+a{color:var(--accent)}
 button.go{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}button.go:hover{background:var(--accent2)}
 button.link{border:0;background:none;color:var(--accent);min-width:0;padding:0 .2rem;text-decoration:underline}
 button:focus-visible,input:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
@@ -137,7 +138,8 @@ const views={
   <p class="soft" style="margin-top:1rem">${{pictures:"Saved in your Pictures folder, in ",desktop:"Saved on your Desktop, in "}[S.place]?`${{pictures:"Saved in your Pictures folder, in ",desktop:"Saved on your Desktop, in "}[S.place]}the folder <b>${esc(String(S.folder).split(/[\\/]/).pop())}</b>.`:`Saved in ${esc(S.folder)}.`}</p>
   ${S.to_review?`<div class="note"><b>${S.to_review} photo${S.to_review>1?"s":""} need your eye.</b> The program found more than one piece of the card that could come next and would rather ask than guess. <button style="margin-left:.5rem" onclick="review()">Decide now</button></div>`:""}
   ${copyCard()}
-  <div class="actions"><button class="go" onclick="api('open',{what:'folder'})">Open the folder</button><button onclick="api('open',{what:'report'})">See the full report</button><button onclick="api('restart')">Recover another card</button></div>`;},
+  <div class="actions"><button class="go" onclick="api('open',{what:'folder'})">Open the folder</button><button onclick="api('open',{what:'report'})">See the full report</button><button onclick="api('restart')">Recover another card</button></div>
+  <p class="soft" style="margin-top:1.5rem">Photo Lifeboat is free and always will be. If it helped, you can <a href="#" onclick="api('open',{what:'donate'});return false">support it on Ko-fi</a>.</p>`;},
  image(){return `<h1>Choose the card image</h1><p>A raw copy of a card, usually a .img or .dd file.</p>
   <div class="row"><input type="text" id="img" aria-label="Path of the image file" placeholder="for example C:\\Users\\you\\Desktop\\card.img" value="${esc(imgPath)}" oninput="imgPath=this.value"><button onclick="pick('file')">Choose…</button></div>
   ${S&&S.message?err():""}<div class="actions"><button class="go" onclick="api('use_image',{path:imgPath})">Recover from this file</button><button onclick="go('start')">Back</button></div>`;},

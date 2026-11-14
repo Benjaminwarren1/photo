@@ -120,7 +120,7 @@ happened. Please don't attach your personal photos.
 
 Photo Lifeboat is free and always will be. Donations, if you want to give one, go towards a code-signing
 certificate (so Windows stops showing its warning) and towards keeping the program maintained.
-*(Donation link coming soon.)*
+You can donate on [Ko-fi](https://ko-fi.com/photolifeboat). No account needed.
 
 ## For developers
 
