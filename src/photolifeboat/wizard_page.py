@@ -59,7 +59,7 @@ label.opt:hover{background:var(--hover)}label.opt input{accent-color:var(--accen
 label.opt b{display:block;font-weight:600}label.opt small{color:var(--soft);font-size:.86rem}
 input[type=radio]{accent-color:var(--accent)}
 </style></head><body>
-<header class="top"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="15" rx="3" fill="var(--accent)"/><rect x="8" y="3" width="8" height="4" rx="1.5" fill="var(--accent)"/><circle cx="12" cy="12.5" r="4.2" fill="var(--layer)"/><circle cx="12" cy="12.5" r="2.4" fill="var(--accent)"/></svg><b>Photo Lifeboat</b><span id="ver"></span></header>
+<header class="top"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="#f26522" stroke-width="6"/><circle cx="12" cy="12" r="8" fill="none" stroke="#fff" stroke-width="6" stroke-dasharray="6.28 6.28" stroke-dashoffset="3.14" transform="rotate(45 12 12)"/><circle cx="12" cy="12" r="11.2" fill="none" stroke="#7a2e08" stroke-width="1.2"/><circle cx="12" cy="12" r="4.8" fill="none" stroke="#7a2e08" stroke-width="1.2"/></svg><b>Photo Lifeboat</b><span id="ver"></span></header>
 <main><section id="view" aria-live="polite"></section></main>
 <footer class="bar" id="bar"></footer>
 <script>
