@@ -229,8 +229,10 @@ class Recovery(FindUnlisted, Review, SaveResults):
     def _claim(self, chain) -> None:
         self._avail[np.asarray(chain, np.int64)] = False
 
-    def _still_free(self, r) -> bool:
-        return bool(self._avail[np.asarray(r.chain, np.int64)].all())
+    def _still_holds(self, r) -> bool:
+        """Is an answer worked out a moment ago, while other photos were being taken, still the
+        answer now? It is, unless a cluster it relied on being free has been taken since."""
+        return r.looked is not None and bool(self._avail[np.asarray(r.looked, np.int64)].all())
 
     def _ahead(self, jobs, fn):
         """look_ahead with as many processor cores as decoding can use."""
@@ -367,7 +369,7 @@ class Recovery(FindUnlisted, Review, SaveResults):
         for k, (it, (proved, r)) in enumerate(self._ahead(jpegs, whole)):
             self.progress = (k, len(jpegs))
             hint = it._hint
-            if r is not None and r.status == "complete" and not self._still_free(r):
+            if r is not None and not self._still_holds(r):
                 proved, r = whole(it)       # an earlier photo has just taken some of this space: look again
             if proved:
                 pieces = count_pieces(hint)

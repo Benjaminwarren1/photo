@@ -7,7 +7,7 @@ only kept when its own contents vouch for it.
 
 This is a part of Recovery (see recover.py), kept in its own file. It works on the same state:
 self.vol, self._avail, self._blank, self._items, self._rb, self._vr, and the helpers _claim,
-_still_free, _attempt, _ahead and _accept.
+_still_holds, _attempt, _ahead and _accept.
 """
 from __future__ import annotations
 
@@ -87,8 +87,8 @@ class FindUnlisted:
             self.progress = (k, len(heads))
             if not self._avail[c]:
                 continue
-            if r is not None and r.status == "complete" and not self._still_free(r):
-                r = in_one_piece(c)
+            if r is not None and not self._still_holds(r):
+                r = in_one_piece(c)         # an earlier photo has just taken some of this space: look again
             if r is not None and r.status == "complete":
                 take(c, r)
             # Where a listed photo could not be finished, its folder entry may be out of date and a

@@ -458,6 +458,34 @@ def test_card_reformatted_then_used_again_gives_back_both_layers(tmp_path, new_p
     assert any("ET_0" in p.name for p in files), "the newer photos lost their names"
 
 
+def test_an_answer_says_which_free_clusters_it_relied_on():
+    """Photos are checked on other processor cores a little ahead of the main run, which takes
+    clusters for each photo it accepts as it goes. An answer is only kept if every free cluster it
+    relied on is still free, so the answer must name them all: for a photo whose header runs into
+    a second cluster, that includes the second cluster, even when the photo then fails. Seen on a
+    reformatted card, where two folder entries started at the same cluster and the run's answer
+    for the second depended on whether the first had been taken yet."""
+    from photorecover.fat import open_volume
+    from photorecover.rebuild import Rebuilder
+    from photorecover.synth.fatbuilder import FatBuilder
+    from photorecover.synth.photos import make_photo
+    b = FatBuilder(16, 16, 512)
+    b.mkdir("DCIM")
+    t = b.write("DCIM/A.JPG", make_photo(11, 320, 240))
+    b.delete_all()
+    vol = open_volume(b.tobytes())
+    avail = ~vol.allocated()
+    rb = Rebuilder(vol, avail)
+    r = rb.rebuild(t.clusters[0], t.size, contiguous_only=True)
+    assert r.status == "complete" and r.chain == t.clusters
+    assert set(r.chain[1:]) <= set(r.looked)
+    # once the header's second cluster is taken, the answer is a different one
+    avail[t.clusters[1]] = False
+    r2 = rb.rebuild(t.clusters[0], t.size, contiguous_only=True)
+    assert r2.status == "failed" and t.clusters[1] not in r2.looked
+    assert r2.looked, "a failed answer still names the clusters it read"
+
+
 @pytest.mark.parametrize("in_pieces", [False, True])
 def test_overwritten_photo_is_not_saved_as_part_of_the_photo_that_replaced_it(tmp_path, in_pieces):
     """Seen on a real card: a deleted photo's space was reused by a later, bigger photo that begins

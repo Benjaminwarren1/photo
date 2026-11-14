@@ -16,6 +16,7 @@ blocks the header promises and finds the end marker where the size says it is.
 from __future__ import annotations
 
 import hashlib
+import threading
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -184,6 +185,10 @@ class Result:
     exact_end: bool = True        # the end marker sits exactly where the recorded size says
     image_bytes: int = 0          # length up to and including the end marker
     scores: list[float] = field(default_factory=list)
+    # The clusters this answer relied on being free: the ones it took into the chain or tried
+    # as the next piece. None when it searched the whole card. Free clusters only ever get
+    # taken, never given back, so while all of these are still free the answer still holds.
+    looked: list[int] | None = field(default_factory=list, repr=False, compare=False)
 
 
 class _Work:
@@ -208,10 +213,18 @@ class Rebuilder:
         self.vol = vol
         self.avail = avail
         self.always_ask = False      # leave every join that is not simply "the next free cluster" to a person
+        # What the rebuild running on this thread has relied on being free (see Result.looked).
+        # Kept per thread because rebuilds run ahead on other cores while the main thread
+        # takes clusters for the photos it has accepted.
+        self._seen = threading.local()
 
     def _next_avail(self, c: int, used: set[int]) -> int | None:
         """The next cluster after c that may still hold part of an unrecovered file."""
-        return next_free(self.avail, c, used, self.vol.max_cluster)
+        nx = next_free(self.avail, c, used, self.vol.max_cluster)
+        seen = getattr(self._seen, "looked", None)
+        if seen is not None and nx is not None:
+            seen.append(nx)
+        return nx
 
     def prove_chain(self, chain: list[int], size: int) -> Result | None:
         """Check a chain suggested by the file system (exFAT keeps a deleted file's
@@ -230,7 +243,8 @@ class Rebuilder:
         st.feed(data[info.data_off:])
         if st.status != ST_DONE or st.end_offset() is None or info.data_off + st.end_offset() != size:
             return None
-        res = Result(chain[0], size, chain=list(chain), status="complete", percent=100.0, info=info)
+        res = Result(chain[0], size, chain=list(chain), status="complete", percent=100.0, info=info,
+                     looked=list(chain))
         res.has_preview = jpeg.decode_thumb(info) is not None
         res.image_bytes = size
         return res
@@ -243,6 +257,18 @@ class Rebuilder:
         forced maps a position in the chain to the cluster a person chose for it.
         wide=False looks for each next piece only near the last one, which is where it is
         almost every time, and leaves the rest of the card to a later, wider attempt."""
+        self._seen.looked, self._seen.everywhere = [], False
+        try:
+            res = self._rebuild(start, size, contiguous_only, forced, wide)
+        finally:
+            looked, everywhere = self._seen.looked, self._seen.everywhere
+            self._seen.looked = None
+        res.looked = None if everywhere else looked
+        return res
+
+    def _rebuild(self, start: int, size: int | None, contiguous_only: bool,
+                 forced: dict[int, int] | None, wide: bool) -> Result:
+        """rebuild, without the record of what it looked at."""
         vol = self.vol
         res = Result(start, size)
         if not vol.valid(start):
@@ -437,6 +463,7 @@ class _Follow:
         card unsearched. Pieces of a file usually lie near each other, so look nearby first. A
         nearby piece is only taken if it goes on to finish the photo exactly, which is proof
         wherever it was found; otherwise the search widens to the rest of the card."""
+        self.rb._seen.everywhere = True
         pool = np.flatnonzero(self.rb.avail)
         pool = pool[pool >= 2]
         pool = pool[~np.isin(pool, np.fromiter(w.used, np.int64, len(w.used)))]
