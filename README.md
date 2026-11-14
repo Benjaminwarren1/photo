@@ -18,7 +18,9 @@ documents, music and voice recordings, and sorts them into folders for you.
 **[Download Photo Lifeboat for Windows](../../releases/latest)** (Windows 10 and 11)
 
 > **Early version.** It has rescued thousands of photos in testing, but it has not yet been tried on many
-> different cards and cameras. If it does not work for you, please [tell us](../../issues).
+> different cards and cameras. Whether it worked or not, please [tell us how it went](../../issues/new/choose).
+> We'd especially love to hear from people with complicated cards, for example one used in a dashcam, then
+> formatted for a camera, then reused in a phone.
 
 ## First: stop using the card
 
@@ -176,8 +178,13 @@ published here for anyone to read.
 
 ## Help and feedback
 
-If something goes wrong or a message is confusing, please [open an issue](../../issues) and describe what
-happened. Please don't attach your personal photos.
+We'd love to hear how it went, good or bad. [Tell us here](../../issues/new/choose): there's a short form
+that asks what kind of card it was, what it had been used for, and what came back. Reports from cards with a
+complicated history (used in several devices, formatted more than once, dashcam or drone cards) help most,
+because those are the hardest to test.
+
+If something goes wrong or a message is confusing, use the same link to describe what happened. You'll need a
+free GitHub account. Please don't attach your personal photos.
 
 ## Supporting the project
 
