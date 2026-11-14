@@ -3,6 +3,7 @@ guide, contact sheets, the MCP server, and the guards that keep anything from be
 import hashlib
 import io
 import json
+import os
 import time
 from pathlib import Path
 
@@ -20,6 +21,10 @@ def card(tmp_path_factory):
     b.delete_all()
     b.save(d / "card.img")
     return d, b
+
+
+# Names of drives on this system ("/dev/null" stands for a Linux or Mac device node).
+DRIVES = [r"\\.\PhysicalDrive1", "E:"] + (["/dev/null"] if os.name != "nt" else [])
 
 
 def run_cli(capsys, *argv):
@@ -43,7 +48,7 @@ def test_recover_json_and_progress_keep_to_their_streams(card, tmp_path, capsys)
 def test_errors_are_json_too_and_a_drive_is_never_recovered_from_directly(tmp_path, capsys):
     code, out, _ = run_cli(capsys, "recover", tmp_path / "nothing.img", "--json")
     assert code == 2 and json.loads(out)["error"] == "missing"
-    for drive in (r"\\.\PhysicalDrive1", "E:", "/dev/null"):
+    for drive in DRIVES:
         code, out, err = run_cli(capsys, "recover", drive, "--json")
         assert code == 2 and json.loads(out)["error"] == "device" and "clone" in err
 
@@ -51,7 +56,7 @@ def test_errors_are_json_too_and_a_drive_is_never_recovered_from_directly(tmp_pa
 def test_a_copy_is_never_written_onto_a_drive(tmp_path, capsys):
     src = tmp_path / "card.bin"
     src.write_bytes(b"x" * 4096)
-    for dest in (r"\\.\PhysicalDrive1", "/dev/null"):
+    for dest in DRIVES:
         code, out, _ = run_cli(capsys, "clone", src, dest, "--json")
         assert code == 1 and json.loads(out)["error"] == "device"
         assert device.clone(str(src), Path(dest))["error"] == "device"     # and not by the library either
