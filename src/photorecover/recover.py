@@ -837,7 +837,7 @@ class Recovery:
                     still.append(it)
             pending = still
             if rnd == 0 and pending:
-                self.log(f"Searching the whole card for the rest of {len(pending)} photos")
+                self.log(f"Searching the whole card for missing pieces of {len(pending)} damaged photos")
         for it in pending:
             if self._stale_entry(it):      # the photo that replaced it may only have been finished after its own turn
                 continue
@@ -913,7 +913,7 @@ class Recovery:
                 if r is not None and r.status != "complete" and (r.picks or r.has_preview):
                     again.append(c)
         if again:
-            self.log(f"Searching the whole card for the rest of {len(again)} of them")
+            self.log(f"Searching the whole card for missing pieces of {len(again)} damaged photos")
         for k, c in enumerate(again):
             self.progress = (k, len(again))
             if self._avail[c]:
