@@ -12,7 +12,8 @@ import pytest
 
 from photolifeboat import cli, device, linux
 
-pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux only")
+if not sys.platform.startswith("linux"):
+    pytest.skip("Linux only", allow_module_level=True)
 
 
 def make(*a):
