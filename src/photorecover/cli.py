@@ -50,7 +50,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     if a.cmd == "check":
-        from .recover import audit_jpeg
+        from .checks import audit_jpeg
         worst = 0
         for f in a.files:
             try:

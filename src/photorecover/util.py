@@ -5,8 +5,11 @@ that used to be written out by hand wherever it was needed.
 """
 from __future__ import annotations
 
+import itertools
 import os
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -72,3 +75,23 @@ def set_mtime(path: Path, mtime: tuple | None) -> None:
         os.utime(path, (ts, ts))
     except (ValueError, OverflowError, OSError):
         pass
+
+
+def look_ahead(jobs, fn, workers: int):
+    """Yields (job, fn(job)) in order, with fn running on other processor cores a little
+    ahead of whoever is reading. fn must only look, never change anything: its answer
+    is based on the card as it was a moment ago, and the reader checks it still holds."""
+    if workers < 2 or len(jobs) < 4 * workers:
+        for j in jobs:
+            yield j, fn(j)
+        return
+    with ThreadPoolExecutor(workers) as pool:
+        queue: deque = deque()
+        it_jobs = iter(jobs)
+        for j in itertools.islice(it_jobs, 4 * workers):
+            queue.append((j, pool.submit(fn, j)))
+        while queue:
+            j, f = queue.popleft()
+            yield j, f.result()
+            for nj in itertools.islice(it_jobs, 1):
+                queue.append((nj, pool.submit(fn, nj)))

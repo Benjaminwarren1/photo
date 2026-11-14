@@ -4,7 +4,7 @@ import io
 import numpy as np
 from PIL import Image
 
-from photorecover.recover import preview_fill
+from photorecover.output import preview_fill
 from photorecover.synth.photos import make_photo
 
 

@@ -8,7 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from photorecover.recover import FOLDER_OK, Recovery
+from photorecover.output import FOLDER_OK
+from photorecover.recover import Recovery
 from photorecover.synth.scenarios import used_card
 
 CARDS = {
@@ -252,7 +253,7 @@ def test_progressive_photos_whole_only_and_never_wrong(tmp_path):
 def test_close_calls_can_be_decided_by_a_person(tmp_path):
     """When the tool will not decide a join itself, a person chooses from pictures. Choosing
     the right piece each time must finish the photo exactly, and the pictures must be real."""
-    from photorecover.recover import GRADE_REVIEW
+    from photorecover.items import GRADE_REVIEW
     b = used_card(**CARDS["fat16-16k"])
     b.delete_all()
     rec = run(tmp_path, b)
@@ -401,7 +402,7 @@ def test_final_check_fails_a_photo_whose_larger_part_is_another_picture():
     not become the yardstick."""
     import io
     from PIL import Image
-    from photorecover.recover import audit_jpeg, first_bad_band
+    from photorecover.checks import audit_jpeg, first_bad_band
     from photorecover.synth.photos import _exif_with_thumbnail, draw_scene
     real, other = draw_scene(71, 1200, 1600), draw_scene(72, 1200, 1600, dark=True)
     th = real.copy()
@@ -990,7 +991,6 @@ def test_a_full_output_drive_is_said_plainly_and_leaves_no_cut_short_file(tmp_pa
     """The drive being saved to fills up part way: what was saved stays, nothing half-written is
     left behind, the rest is marked as not saved, and the run ends with a plain explanation."""
     import errno
-    from photorecover import recover as rmod
     from photorecover.synth.fatbuilder import FatBuilder
     from photorecover.synth.photos import make_photo
     b = FatBuilder(64, 16, 4096)

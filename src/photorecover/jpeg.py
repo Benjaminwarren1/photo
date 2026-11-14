@@ -32,6 +32,12 @@ ERROR_NAMES = {1: "invalid Huffman code", 2: "block overrun", 3: "bad coefficien
                4: "unexpected marker", 5: "restart marker out of order", 6: "DC out of range"}
 
 
+def decode_workers() -> int:
+    """How many processor cores are worth using for decoding at once. The pure-Python decoder
+    holds the interpreter lock, so it only ever uses one."""
+    return min(8, os.cpu_count() or 1) if HAVE_C else 1
+
+
 class HeaderIncomplete(Exception):
     """The header runs past the data given; supply more bytes."""
 
@@ -357,7 +363,7 @@ class Stream:
         def part(cs):
             return _impl.screen_many(image, data_off, cl, cs.tobytes(), self.carry, st, self.info.spec, n_mcus)
 
-        workers = min(8, os.cpu_count() or 1) if HAVE_C and len(clusters) >= 2048 else 1
+        workers = decode_workers() if len(clusters) >= 2048 else 1
         if workers > 1:
             with ThreadPoolExecutor(workers) as ex:
                 parts = list(ex.map(part, np.array_split(clusters, workers)))

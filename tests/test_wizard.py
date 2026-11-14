@@ -64,7 +64,7 @@ def test_wizard_card_to_recovered_folder(tmp_path, monkeypatch):
 
 def test_wizard_review_api(tmp_path):
     """The wizard hands out close calls as pictures and applies the choice."""
-    from photorecover.recover import GRADE_REVIEW
+    from photorecover.items import GRADE_REVIEW
     b = used_card(fat_type=16, cluster_size=16384, size_mb=128, seed=2)
     b.delete_all()
     img = tmp_path / "card.img"
