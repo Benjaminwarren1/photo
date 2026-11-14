@@ -1,12 +1,21 @@
+<img src="docs/icon.png" alt="" width="96" align="right">
+
 # Photo Lifeboat
 
-**Free software that gets deleted photos back from memory cards.**
+**Free software that gets deleted photos back from memory cards. Videos, documents and music too.**
 
 Deleted the photos on your camera or phone card by mistake? Formatted the wrong card? Got a "this card
 needs formatting" message? As long as nothing new has been saved over them, your photos are usually
-still on the card. This program finds them and copies them back onto your computer.
+still on the card. Photo Lifeboat finds them and copies them back onto your computer.
 
-It is free, it has no adverts, and it never asks you to pay to "unlock" your photos.
+It doesn't stop at photos. It rescues every kind of file it can find on the card, including videos,
+documents, music and voice recordings, and sorts them into folders for you.
+
+- **Free**, with no adverts, and it never asks you to pay to "unlock" anything.
+- **Made almost entirely by AI.** [More about that below](#made-almost-entirely-by-ai).
+- **Yours to use, share and change.** [What that means](#free-to-use-share-and-change).
+
+**[Download Photo Lifeboat for Windows](../../releases/latest)** (Windows 10 and 11)
 
 > **Early version.** It has rescued thousands of photos in testing, but it has not yet been tried on many
 > different cards and cameras. If it does not work for you, please [tell us](../../issues).
@@ -87,8 +96,39 @@ untouched. That's why Photo Lifeboat copies the card first and only ever works f
 
 - **Your card is only ever read.** The program never writes anything to it.
 - **Nothing leaves your computer.** Your photos are not uploaded anywhere.
-- **The code is open.** Anyone can read exactly what it does. It is published under the GPL-3.0 licence, so it
-  stays free for everyone, forever, and nobody can take it and sell it.
+- **The code is open.** Anyone can read exactly what it does.
+
+## Made almost entirely by AI
+
+We want to be upfront about this. Nearly all of Photo Lifeboat (the program, its tests and this page) was
+written by Claude, an AI made by Anthropic. A person decided what it should do, tried it out on real cards and
+made the decisions along the way, but the AI did the writing.
+
+It started when an AI assistant accidentally deleted everything on a memory card. Getting those photos back
+taught us a lot about how cards store photos, and this program is what came out of it.
+
+AI can get things wrong, just as people can, so the program is built to be careful:
+
+- It never writes to your card. It makes a copy and works only from that.
+- It checks the photos it rescues and tells you plainly which ones it could check and which it couldn't.
+- Every change is tested on made-up cards where we know exactly what was deleted, and on real cards, before
+  it is released.
+- All the code is public, so anyone can check what it does.
+
+## Free to use, share and change
+
+Photo Lifeboat is free software, published under the GNU General Public License version 3 (GPL-3.0). In plain
+English:
+
+- **Use it** as much as you like, at home or at work, without paying.
+- **Share it** with anyone.
+- **Change it** however you like. All the code is here to read and edit.
+- **One condition:** if you give a changed version to other people, you have to share it under the same
+  licence, with its code, so it stays free and open for them too. Nobody can take it and turn it into a
+  closed program.
+
+It comes with no guarantee. We do our best, but you use it at your own risk. The full terms are in
+[LICENSE](LICENSE).
 
 ## Why it can do better than other free tools
 
@@ -126,4 +166,4 @@ You can donate on [Ko-fi](https://ko-fi.com/photolifeboat). No account needed.
 
 Technical details, the command-line version and how to build it are in [docs/DEVELOPING.md](docs/DEVELOPING.md).
 
-Licence: GPL-3.0-or-later.
+Licence: GPL-3.0-or-later (see [LICENSE](LICENSE)).

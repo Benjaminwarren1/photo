@@ -229,6 +229,7 @@ __marimo__/
 *.jpeg
 *.JPG
 *.png
+!docs/icon.png
 *.heic
 *.mp4
 *.3gp
