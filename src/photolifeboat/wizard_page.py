@@ -3,7 +3,7 @@
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Photo Recovery</title>
+<title>Photo Lifeboat</title>
 <style>
 /* Laid out like a Windows setup wizard (title, content, Back / Next in the bottom right) and styled after
    Windows 11, so it looks like the rest of the computer. Follows the system's light or dark mode. */
@@ -23,6 +23,7 @@ footer.bar{display:flex;flex-direction:row-reverse;justify-content:flex-start;ga
 footer.bar:empty{display:none}
 button{font:inherit;font-size:.95rem;min-height:2rem;min-width:6rem;padding:.3rem 1rem;border-radius:4px;border:1px solid var(--stroke);border-bottom-color:var(--stroke2);background:var(--card);color:var(--ink);cursor:default}
 button:hover{background:var(--hover)}
+a{color:var(--accent)}
 button.go{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}button.go:hover{background:var(--accent2)}
 button.link{border:0;background:none;color:var(--accent);min-width:0;padding:0 .2rem;text-decoration:underline}
 button:focus-visible,input:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
@@ -58,7 +59,7 @@ label.opt:hover{background:var(--hover)}label.opt input{accent-color:var(--accen
 label.opt b{display:block;font-weight:600}label.opt small{color:var(--soft);font-size:.86rem}
 input[type=radio]{accent-color:var(--accent)}
 </style></head><body>
-<header class="top"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="15" rx="3" fill="var(--accent)"/><rect x="8" y="3" width="8" height="4" rx="1.5" fill="var(--accent)"/><circle cx="12" cy="12.5" r="4.2" fill="var(--layer)"/><circle cx="12" cy="12.5" r="2.4" fill="var(--accent)"/></svg><b>Photo Recovery</b><span id="ver"></span></header>
+<header class="top"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="#f26522" stroke-width="6"/><circle cx="12" cy="12" r="8" fill="none" stroke="#fff" stroke-width="6" stroke-dasharray="6.28 6.28" stroke-dashoffset="3.14" transform="rotate(45 12 12)"/><circle cx="12" cy="12" r="11.2" fill="none" stroke="#7a2e08" stroke-width="1.2"/><circle cx="12" cy="12" r="4.8" fill="none" stroke="#7a2e08" stroke-width="1.2"/></svg><b>Photo Lifeboat</b><span id="ver"></span></header>
 <main><section id="view" aria-live="polite"></section></main>
 <footer class="bar" id="bar"></footer>
 <script>
@@ -74,7 +75,8 @@ function err(){return S.message?`<p class="err" role="alert">${esc(S.message)}</
 const views={
  start(){return `<h1>Get your photos back</h1>
   <p>This copies your memory card onto this computer, then recovers deleted photos from the copy. Your card is only ever read, never changed.</p>
-  <div class="note"><b>Before you start:</b> stop using the card. Don't take photos on it, don't save anything to it, and don't let anything format it.</div>
+  <div class="note"><b>Before you start:</b> stop using the card. Don't let anything format it, don't take photos on it, and don't save anything to it.</div>
+  <p class="soft">Already formatted the card? It's still worth trying. Photos can often be rescued from a formatted card.</p>
   <div class="actions"><button class="go" onclick="go('where')">Recover from a card</button>
   <button onclick="go('image')">I already have a card image file</button></div>`;},
  where(){const back=S.step==="confirm";
@@ -137,7 +139,8 @@ const views={
   <p class="soft" style="margin-top:1rem">${{pictures:"Saved in your Pictures folder, in ",desktop:"Saved on your Desktop, in "}[S.place]?`${{pictures:"Saved in your Pictures folder, in ",desktop:"Saved on your Desktop, in "}[S.place]}the folder <b>${esc(String(S.folder).split(/[\\/]/).pop())}</b>.`:`Saved in ${esc(S.folder)}.`}</p>
   ${S.to_review?`<div class="note"><b>${S.to_review} photo${S.to_review>1?"s":""} need your eye.</b> The program found more than one piece of the card that could come next and would rather ask than guess. <button style="margin-left:.5rem" onclick="review()">Decide now</button></div>`:""}
   ${copyCard()}
-  <div class="actions"><button class="go" onclick="api('open',{what:'folder'})">Open the folder</button><button onclick="api('open',{what:'report'})">See the full report</button><button onclick="api('restart')">Recover another card</button></div>`;},
+  <div class="actions"><button class="go" onclick="api('open',{what:'folder'})">Open the folder</button><button onclick="api('open',{what:'report'})">See the full report</button><button onclick="api('restart')">Recover another card</button></div>
+  <p class="soft" style="margin-top:1.5rem">Photo Lifeboat is free and always will be. If it helped, you can <a href="#" onclick="api('open',{what:'donate'});return false">support it on Ko-fi</a>.</p>`;},
  image(){return `<h1>Choose the card image</h1><p>A raw copy of a card, usually a .img or .dd file.</p>
   <div class="row"><input type="text" id="img" aria-label="Path of the image file" placeholder="for example C:\\Users\\you\\Desktop\\card.img" value="${esc(imgPath)}" oninput="imgPath=this.value"><button onclick="pick('file')">Choose…</button></div>
   ${S&&S.message?err():""}<div class="actions"><button class="go" onclick="api('use_image',{path:imgPath})">Recover from this file</button><button onclick="go('start')">Back</button></div>`;},

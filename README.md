@@ -1,36 +1,57 @@
-# Photo Recovery
+<img src="docs/icon.png" alt="" width="96" align="right">
 
-**Free software that gets deleted photos back from memory cards.**
+# Photo Lifeboat
+
+**Free software that gets deleted photos back from memory cards. Videos, documents and music too.**
 
 Deleted the photos on your camera or phone card by mistake? Formatted the wrong card? Got a "this card
 needs formatting" message? As long as nothing new has been saved over them, your photos are usually
-still on the card. This program finds them and copies them back onto your computer.
+still on the card. Photo Lifeboat finds them and copies them back onto your computer.
 
-It is free, it has no adverts, and it never asks you to pay to "unlock" your photos.
+It doesn't stop at photos. It rescues every kind of file it can find on the card, including videos,
+documents, music and voice recordings, and sorts them into folders for you.
+
+- **Free**, with no adverts, and it never asks you to pay to "unlock" anything.
+- **Made almost entirely by AI.** [More about that below](#made-almost-entirely-by-ai).
+- **Yours to use, share and change.** [What that means](#free-to-use-share-and-change).
+
+**[Download Photo Lifeboat for Windows](../../releases/latest)** (Windows 10 and 11)
 
 > **Early version.** It has rescued thousands of photos in testing, but it has not yet been tried on many
-> different cards and cameras. If it does not work for you, please [tell us](../../issues).
+> different cards and cameras. Whether it worked or not, please [tell us how it went](../../issues/new/choose).
+> We'd especially love to hear from people with complicated cards, for example one used in a dashcam, then
+> formatted for a camera, then reused in a phone.
 
 ## First: stop using the card
 
-This matters more than anything else. Until your photos are rescued:
+**Don't format the card, even if your computer or camera asks you to.** If a message says the card needs
+formatting, click **Cancel**.
+
+Until your photos are rescued, also:
 
 - don't take any more photos on the card,
-- don't copy anything onto it,
-- don't format it, even if the computer or camera asks you to.
+- don't copy anything onto it.
 
 Each new photo can land on top of an old one, and a photo that has been written over is gone for good.
-No program anywhere can bring it back.
+No recovery program could bring it back.\*
+
+<sub>\* Your only remaining option would be an expensive specialist lab, and even then you might only get
+damaged photos back.</sub>
+
+> **Already formatted it?** Don't give up, it's still worth a try. The usual kind of format, on a camera, a
+> phone or Windows' Quick Format, usually only wipes the card's list of files and leaves the photos themselves in place.
+> In our tests Photo Lifeboat has rescued photos from formatted cards, and even from cards that were formatted
+> and then used again. (A Windows full format, with Quick Format unticked, does wipe the photos for good.)
 
 If your card has a small lock switch on its side, slide it to **Lock**. The program never changes the
 card, but locking it keeps everything else from changing it too.
 
 ## How to use it (Windows 10 and 11)
 
-1. Download **PhotoRecovery-…-setup.exe** from the [latest release](../../releases/latest) and open it.
+1. Download **PhotoLifeboat-…-setup.exe** from the [latest release](../../releases/latest) and open it.
 2. Windows will probably show a blue box saying "Windows protected your PC". Click **More info**, then
    **Run anyway**. (See [Why does Windows warn me?](#why-does-windows-warn-me) below.)
-3. Click through the installer. It takes a few seconds and doesn't need an administrator. Photo Recovery
+3. Click through the installer. It takes a few seconds and doesn't need an administrator. Photo Lifeboat
    then opens, and you'll find it in the Start menu and on your desktop.
 4. Choose where your rescued photos should go: your **Pictures** folder, your **Desktop**, or somewhere else
    such as an external drive.
@@ -44,11 +65,11 @@ of the card.
 When it has finished, click **Open the folder** to see your photos. Once you're happy with them, the program
 offers to delete the copy of the card to free up the space.
 
-To remove the program later, uninstall **Photo Recovery** from Settings > Apps, like any other program. Your
+To remove the program later, uninstall **Photo Lifeboat** from Settings > Apps, like any other program. Your
 rescued photos are not touched.
 
 Rather not install anything? The release also has a **portable** zip: extract it and double-click
-**PhotoRecovery**.
+**PhotoLifeboat**.
 
 Mac and Linux versions are planned but not ready yet.
 
@@ -81,14 +102,68 @@ by type into the folders above. The report shows where each file used to be, in 
 
 Keep the memory card as it is, and don't save anything new to it, until you're sure you have everything you
 want. If something is missing, another recovery program may still find it, but only while the card stays
-untouched. That's why Photo Recovery copies the card first and only ever works from the copy.
+untouched. That's why Photo Lifeboat copies the card first and only ever works from the copy.
 
 ## Is it safe?
 
 - **Your card is only ever read.** The program never writes anything to it.
 - **Nothing leaves your computer.** Your photos are not uploaded anywhere.
-- **The code is open.** Anyone can read exactly what it does. It is published under the GPL-3.0 licence, so it
-  stays free for everyone, forever, and nobody can take it and sell it.
+- **The code is open.** Anyone can read exactly what it does.
+
+## Why it exists
+
+Photo Lifeboat started with an accident. We deleted more than 1,300 files. Getting them back took a lot of
+trial and error and code written specially for the job, because many of the photos had been stored in scattered
+pieces that ordinary recovery programs can't put back together. In the end nearly every photo came back whole,
+and all 35 videos were rebuilt.
+
+None of that would have been easy for someone who just wants their holiday photos back. So we took what we
+learned and built one simple program that does the whole job, step by step, in plain English.
+
+It brings together jobs that usually need separate programs:
+
+- **Undeleting.** Like [Recuva](https://www.ccleaner.com/recuva), it reads the card's own list of deleted
+  files, so they come back at their real size.
+- **Carving.** Like [PhotoRec](https://www.cgsecurity.org/wiki/PhotoRec), it searches the whole card for
+  photos, videos and other files by what they look like inside, so it still finds them after the card has been
+  formatted or its file list is damaged.
+- **Rebuilding broken photos.** Like photo repair tools, it puts back together photos that were saved in pieces,
+  and saves the part it can when the rest is gone.
+- **Checking.** It checks every photo it rescues against the small preview the camera saved inside it, and
+  tells you plainly which ones it could check.
+
+Those programs are excellent and we learned a lot from them, PhotoRec especially. Photo Lifeboat doesn't use
+their code. It's a separate program that does these jobs together, behind one simple set of steps.
+
+## Made almost entirely by AI
+
+We want to be upfront about this. Nearly all of Photo Lifeboat (the program, its tests and this page) was
+written by AI. A person decided what it should do, tried it out on real cards and made the decisions along the
+way, but the AI did the writing. The fact is I'm a hobbyist programmer, and AI is better at it than I am. That
+doesn't mean it's better at it than everyone, though, and that's why the code is totally open source.
+
+AI can get things wrong, just as people can, so the program is built to be careful:
+
+- It never writes to your card. It makes a copy and works only from that.
+- It checks the photos it rescues and tells you plainly which ones it could check and which it couldn't.
+- Every change is tested on made-up cards where we know exactly what was deleted, and on real cards, before
+  it is released.
+- All the code is public, so anyone can check what it does.
+
+## Free to use, share and change
+
+Photo Lifeboat is free software, published under the GNU General Public License version 3 (GPL-3.0). In plain
+English:
+
+- **Use it** as much as you like, at home or at work, without paying.
+- **Share it** with anyone.
+- **Change it** however you like. All the code is here to read and edit.
+- **One condition:** if you give a changed version to other people, you have to share it under the same
+  licence, with its code, so it stays free and open for them too. Nobody can take it and turn it into a
+  closed program.
+
+It comes with no guarantee. We do our best, but you use it at your own risk. The full terms are in
+[LICENSE](LICENSE).
 
 ## Why it can do better than other free tools
 
@@ -102,7 +177,7 @@ check fully and which it could not.
 
 Windows shows "Windows protected your PC" for any program that is new to it and has not been signed with a
 paid security certificate. It does not mean anything harmful was found: it means Windows doesn't know the
-program yet. Photo Recovery is not signed yet because a certificate costs money every year.
+program yet. Photo Lifeboat is not signed yet because a certificate costs money every year.
 
 We plan to get it signed, through SignPath's free signing for open-source projects or with the help of
 donations. Even after that, the warning fades only as more people download the program and Windows comes to
@@ -113,17 +188,22 @@ published here for anyone to read.
 
 ## Help and feedback
 
-If something goes wrong or a message is confusing, please [open an issue](../../issues) and describe what
-happened. Please don't attach your personal photos.
+We'd love to hear how it went, good or bad. [Tell us here](../../issues/new/choose): there's a short form
+that asks what kind of card it was, what it had been used for, and what came back. Reports from cards with a
+complicated history (used in several devices, formatted more than once, dashcam or drone cards) help most,
+because those are the hardest to test.
+
+If something goes wrong or a message is confusing, use the same link to describe what happened. You'll need a
+free GitHub account. Please don't attach your personal photos.
 
 ## Supporting the project
 
-Photo Recovery is free and always will be. Donations, if you want to give one, go towards a code-signing
+Photo Lifeboat is free and always will be. Donations, if you want to give one, go towards a code-signing
 certificate (so Windows stops showing its warning) and towards keeping the program maintained.
-*(Donation link coming soon.)*
+You can donate on [Ko-fi](https://ko-fi.com/photolifeboat). No account needed.
 
 ## For developers
 
 Technical details, the command-line version and how to build it are in [docs/DEVELOPING.md](docs/DEVELOPING.md).
 
-Licence: GPL-3.0-or-later.
+Licence: GPL-3.0-or-later (see [LICENSE](LICENSE)).

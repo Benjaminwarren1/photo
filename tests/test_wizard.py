@@ -5,8 +5,8 @@ import urllib.request
 
 import pytest
 
-from photorecover import device, wizard
-from photorecover.synth.scenarios import used_card
+from photolifeboat import device, wizard
+from photolifeboat.synth.scenarios import used_card
 
 
 def call(port, token, action, body=None):
@@ -30,7 +30,7 @@ def test_clone_copies_exactly_and_reports_hash(tmp_path):
 def test_wizard_card_to_recovered_folder(tmp_path, monkeypatch):
     drives = tmp_path / "drives"
     drives.mkdir()
-    monkeypatch.setenv("PHOTORECOVER_FAKE_DRIVES", str(drives))
+    monkeypatch.setenv("PHOTOLIFEBOAT_FAKE_DRIVES", str(drives))
     session = wizard.Session()
     srv = wizard.make_server(session, "tok")
     port = srv.server_address[1]
@@ -64,7 +64,7 @@ def test_wizard_card_to_recovered_folder(tmp_path, monkeypatch):
 
 def test_wizard_review_api(tmp_path):
     """The wizard hands out close calls as pictures and applies the choice."""
-    from photorecover.items import GRADE_REVIEW
+    from photolifeboat.items import GRADE_REVIEW
     b = used_card(fat_type=16, cluster_size=16384, size_mb=128, seed=2)
     b.delete_all()
     img = tmp_path / "card.img"
@@ -96,7 +96,7 @@ def test_wizard_review_api(tmp_path):
 
 
 def test_copy_destination_is_checked_before_copying(tmp_path):
-    from photorecover import device
+    from photolifeboat import device
     big = 128 * 10**9
     assert device.dest_problem(tmp_path, big, free=200 * 10**9, fs="exFAT") is None
     assert "not enough room" in device.dest_problem(tmp_path, big, free=120 * 10**9, fs="exFAT")
@@ -109,11 +109,11 @@ def test_copy_destination_is_checked_before_copying(tmp_path):
 def test_copy_command_takes_a_drive_by_the_name_the_drive_list_shows(tmp_path, monkeypatch, with_status):
     import json
     import os
-    from photorecover import cli
+    from photolifeboat import cli
     drives = tmp_path / "drives"
     drives.mkdir()
     (drives / "CARD7.img").write_bytes(os.urandom(300_000))
-    monkeypatch.setenv("PHOTORECOVER_FAKE_DRIVES", str(drives))
+    monkeypatch.setenv("PHOTOLIFEBOAT_FAKE_DRIVES", str(drives))
     dest, status = tmp_path / "out" / "card.img", tmp_path / "status.json"
     (tmp_path / "out").mkdir()
     assert cli.main(["clone", "card7", str(dest)] + (["--status", str(status)] if with_status else [])) == 0
@@ -128,7 +128,7 @@ def _faulty(tmp_path, monkeypatch, plan, size=6 << 20):
     data = os.urandom(size)
     src.write_bytes(data)
     (tmp_path / "plan.json").write_text(json.dumps(plan))
-    monkeypatch.setenv("PHOTORECOVER_FAULTS", str(tmp_path / "plan.json"))
+    monkeypatch.setenv("PHOTOLIFEBOAT_FAULTS", str(tmp_path / "plan.json"))
     device._Faulty.opens, device._Faulty.counts = 0, {}
     return src, data
 
@@ -175,7 +175,7 @@ def test_progress_file_held_open_by_another_program_does_not_stop_the_copy(tmp_p
     """Seen on a real 128 GB copy: 26 minutes in, Windows refused to swap the progress file for an
     instant (something else was reading it) and the copy stopped, blaming administrator rights."""
     import os
-    from photorecover import device
+    from photolifeboat import device
     src = tmp_path / "card.bin"
     src.write_bytes(os.urandom(3 << 20))
     real, calls = os.replace, {"n": 0}
@@ -196,7 +196,7 @@ def test_copy_never_empties_a_file_that_is_already_there(tmp_path):
     onto the thing being copied, and reusing the name of an unfinished copy of another card."""
     import json
     import os
-    from photorecover import device
+    from photolifeboat import device
     src = tmp_path / "card.bin"
     src.write_bytes(os.urandom(2 << 20))
     part = tmp_path / "copy" / "card.img"
@@ -214,7 +214,7 @@ def test_copy_never_empties_a_file_that_is_already_there(tmp_path):
     before = src.read_bytes()
     info = device.clone(str(src), src)
     assert info["state"] == "error" and src.read_bytes() == before
-    from photorecover import cli
+    from photolifeboat import cli
     assert cli.main(["clone", str(src), str(src)]) == 1 and src.read_bytes() == before
     # and the same card, back in, carries on
     progress["source"] = str(src)
@@ -252,3 +252,11 @@ def test_delete_copy_only_removes_the_copy_this_program_made(tmp_path):
     s.delete_copy()
     assert not mine.exists() and not (s.folder / "card.img.sha256.txt").exists()
     assert (s.folder / "Recovered" / "photo.jpg").exists() and s.copy_deleted
+
+
+def test_donate_link_opens_only_the_ko_fi_page(monkeypatch):
+    opened = []
+    monkeypatch.setattr(wizard.webbrowser, "open", opened.append)
+    monkeypatch.setattr(wizard, "open_in_system", lambda p: opened.append(p))
+    wizard.Session().act("open", {"what": "donate", "url": "https://example.com"})
+    assert opened == ["https://ko-fi.com/photolifeboat"]

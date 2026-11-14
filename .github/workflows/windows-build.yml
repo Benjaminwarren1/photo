@@ -19,8 +19,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install ".[window]" pyinstaller
-      - run: python -c "from photorecover import jpeg; assert jpeg.HAVE_C, 'C decoder was not built'"
-      # The version lives only in src/photorecover/__init__.py. This writes the Windows version resource from it
+      - run: python -c "from photolifeboat import jpeg; assert jpeg.HAVE_C, 'C decoder was not built'"
+      # The version lives only in src/photolifeboat/__init__.py. This writes the Windows version resource from it
       # and, for a release tag, stops the build if the tag and the version disagree.
       - name: Stamp the version
         id: version
@@ -30,20 +30,20 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "numeric=$(python packaging/make_version_info.py --numeric)" >> "$GITHUB_OUTPUT"
       # Two programs in one folder (the windowed app and the command line), described in the spec file.
-      - run: pyinstaller --noconfirm --clean packaging/PhotoRecovery.spec
+      - run: pyinstaller --noconfirm --clean packaging/PhotoLifeboat.spec
       - name: Smoke test the packaged program on a synthetic card
         shell: bash
         run: |
-          python -c "from photorecover.synth.scenarios import used_card; b = used_card(fat_type=16, cluster_size=16384, size_mb=64, seed=31, photos=12); b.delete_all(); b.save('smoke.img')"
-          dist/PhotoRecovery/photorecover-cli.exe --version
-          dist/PhotoRecovery/photorecover-cli.exe drives
-          dist/PhotoRecovery/photorecover-cli.exe recover smoke.img --out smoke-out --json | tee smoke.json
+          python -c "from photolifeboat.synth.scenarios import used_card; b = used_card(fat_type=16, cluster_size=16384, size_mb=64, seed=31, photos=12); b.delete_all(); b.save('smoke.img')"
+          dist/PhotoLifeboat/photolifeboat-cli.exe --version
+          dist/PhotoLifeboat/photolifeboat-cli.exe drives
+          dist/PhotoLifeboat/photolifeboat-cli.exe recover smoke.img --out smoke-out --json | tee smoke.json
           python -c "import json; s = json.load(open('smoke.json')); assert s['fast_decoder'] and s['counts']['Verified'] >= 8, s"
       - name: Smoke test the app window
         shell: pwsh
         run: |
-          $env:PHOTORECOVER_SMOKE_WINDOW = "$PWD\window.txt"
-          $p = Start-Process -FilePath dist\PhotoRecovery\PhotoRecovery.exe -PassThru
+          $env:PHOTOLIFEBOAT_SMOKE_WINDOW = "$PWD\window.txt"
+          $p = Start-Process -FilePath dist\PhotoLifeboat\PhotoLifeboat.exe -PassThru
           if (-not $p.WaitForExit(120000)) { $p.Kill(); throw "The app window did not open and close within 2 minutes" }
           $text = Get-Content window.txt -Raw
           Write-Output $text
@@ -55,28 +55,28 @@ jobs:
             if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
             $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6"
           }
-          iscc /Q "/DAppVersion=${{ steps.version.outputs.version }}" "/DAppNumVersion=${{ steps.version.outputs.numeric }}" "/DSourceDir=$PWD\dist\PhotoRecovery" "/DOutputDir=$PWD" packaging\installer.iss
+          iscc /Q "/DAppVersion=${{ steps.version.outputs.version }}" "/DAppNumVersion=${{ steps.version.outputs.numeric }}" "/DSourceDir=$PWD\dist\PhotoLifeboat" "/DOutputDir=$PWD" packaging\installer.iss
           if ($LASTEXITCODE -ne 0) { throw "The installer could not be built" }
-          Get-ChildItem PhotoRecovery-*-setup.exe
+          Get-ChildItem PhotoLifeboat-*-setup.exe
       - name: Smoke test the installer (install, run, uninstall)
         shell: pwsh
         run: |
-          $setup = (Get-ChildItem PhotoRecovery-*-setup.exe).FullName
+          $setup = (Get-ChildItem PhotoLifeboat-*-setup.exe).FullName
           Start-Process -FilePath $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
-          $app = "$env:LOCALAPPDATA\Programs\Photo Recovery"
-          & "$app\photorecover-cli.exe" --version
+          $app = "$env:LOCALAPPDATA\Programs\Photo Lifeboat"
+          & "$app\photolifeboat-cli.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "The installed program did not run" }
-          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Photo Recovery.lnk")) { throw "No Start menu entry" }
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Photo Lifeboat.lnk")) { throw "No Start menu entry" }
           Start-Process -FilePath "$app\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait
           # The uninstaller hands over to a copy of itself, so give it a moment to finish.
-          for ($i = 0; $i -lt 30 -and (Test-Path "$app\PhotoRecovery.exe"); $i++) { Start-Sleep -Seconds 1 }
-          if (Test-Path "$app\PhotoRecovery.exe") { throw "Uninstall left the program behind" }
+          for ($i = 0; $i -lt 30 -and (Test-Path "$app\PhotoLifeboat.exe"); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path "$app\PhotoLifeboat.exe") { throw "Uninstall left the program behind" }
       - uses: actions/upload-artifact@v4
         with:
-          name: PhotoRecovery-windows
+          name: PhotoLifeboat-windows
           path: |
-            dist/PhotoRecovery
-            PhotoRecovery-*-setup.exe
+            dist/PhotoLifeboat
+            PhotoLifeboat-*-setup.exe
       # The newest build is also kept as a "dev-build" pre-release, so it can be fetched with a plain download.
       - name: Publish as the dev-build pre-release
         if: ${{ !startsWith(github.ref, 'refs/tags/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
@@ -84,11 +84,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          (cd dist && 7z a -tzip ../PhotoRecovery-windows.zip PhotoRecovery > /dev/null)
-          cp PhotoRecovery-*-setup.exe PhotoRecovery-windows-setup.exe
+          (cd dist && 7z a -tzip ../PhotoLifeboat-windows.zip PhotoLifeboat > /dev/null)
+          cp PhotoLifeboat-*-setup.exe PhotoLifeboat-windows-setup.exe
           sha="${{ github.event.pull_request.head.sha || github.sha }}"
           gh release view dev-build > /dev/null 2>&1 || gh release create dev-build --prerelease --title "Development build" --notes "Rebuilt automatically from the newest code. Unsigned and untested: for trying things out only." --target "$sha"
-          gh release upload dev-build PhotoRecovery-windows.zip PhotoRecovery-windows-setup.exe --clobber
+          gh release upload dev-build PhotoLifeboat-windows.zip PhotoLifeboat-windows-setup.exe --clobber
           gh release edit dev-build --notes "Built from $sha. Rebuilt automatically from the newest code. Unsigned and untested: for trying things out only."
       # A version tag (v0.2.0) publishes a numbered release with the notes from CHANGELOG.md. See docs/RELEASING.md.
       - name: Publish the numbered release
@@ -99,10 +99,10 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           PYTHONUTF8: "1"
         run: |
-          zip="PhotoRecovery-$VERSION-windows-portable.zip"
-          setup="PhotoRecovery-$VERSION-setup.exe"
-          (cd dist && 7z a -tzip "../$zip" PhotoRecovery > /dev/null)
+          zip="PhotoLifeboat-$VERSION-windows-portable.zip"
+          setup="PhotoLifeboat-$VERSION-setup.exe"
+          (cd dist && 7z a -tzip "../$zip" PhotoLifeboat > /dev/null)
           sha256sum "$setup" "$zip" > SHA256SUMS.txt
           python packaging/release_notes.py "$VERSION" > notes.md
           pre=""; [[ "$VERSION" =~ (a|b|rc|dev)[0-9]*$ ]] && pre="--prerelease"
-          gh release create "$GITHUB_REF_NAME" "$setup" "$zip" SHA256SUMS.txt --title "Photo Recovery $VERSION" --notes-file notes.md --verify-tag $pre
+          gh release create "$GITHUB_REF_NAME" "$setup" "$zip" SHA256SUMS.txt --title "Photo Lifeboat $VERSION" --notes-file notes.md --verify-tag $pre

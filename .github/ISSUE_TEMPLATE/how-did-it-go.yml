@@ -1,0 +1,48 @@
+name: How did it go?
+description: Tell us whether Photo Lifeboat got your files back. Good news helps as much as bad.
+title: "Report: "
+labels: ["report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking a minute to tell us. Please **don't attach your personal photos**. The numbers from the
+        Finished screen or the report are plenty.
+  - type: dropdown
+    id: result
+    attributes:
+      label: How did it go?
+      options:
+        - It got back everything I wanted
+        - It got back some of it
+        - It didn't get anything back
+        - It didn't work or showed an error
+    validations:
+      required: true
+  - type: input
+    id: card
+    attributes:
+      label: What kind of card or drive?
+      placeholder: "for example 32 GB SanDisk microSD, 2 GB SD card, USB stick"
+  - type: textarea
+    id: history
+    attributes:
+      label: What had the card been used for?
+      description: Every device it was in, if you know, and whether it was formatted along the way. Complicated histories are the most useful to hear about.
+      placeholder: "for example: dashcam for a year, formatted in a Nikon camera, then used in an Android phone"
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: How the files were lost, and what came back (the counts from the Finished screen are perfect).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown next to the name at the top of the window.
+      placeholder: "for example 0.1.0"
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11"

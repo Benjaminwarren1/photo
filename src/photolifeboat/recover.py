@@ -201,7 +201,7 @@ class Recovery(FindUnlisted, Review, SaveResults):
     def _summarize(self, newer: "Recovery | None", listed: int, used_fraction: float, t0: float) -> None:
         """The summary of this run's own part of the card. (Other partitions are added to it after.)"""
         vol, steps = self.vol, self.steps
-        self.summary = dict(tool=f"photorecover {__version__}",
+        self.summary = dict(tool=f"photolifeboat {__version__}",
                             filesystem=(f"{newer.vol.kind} now, and {vol.kind}" if newer is not None else vol.kind),
                             cluster_size=vol.cl, clusters=vol.ncl, card_in_use=round(float(used_fraction), 3),
                             files_listed=listed, counts=self._counts(), seconds=round(time.time() - t0, 1),

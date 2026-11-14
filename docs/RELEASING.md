@@ -3,8 +3,8 @@
 Versions follow `MAJOR.MINOR.PATCH` (for example `0.2.0`). Test versions add `rc1`, `rc2` and so on
 (`0.2.0rc1`) and are published as pre-releases. Between releases the code carries a `.dev0` version.
 
-The version is written in one place only: `__version__` in `src/photorecover/__init__.py`. The Python package,
-`photorecover --version`, the report and the Windows "Properties > Details" text all read it from there
+The version is written in one place only: `__version__` in `src/photolifeboat/__init__.py`. The Python package,
+`photolifeboat --version`, the report and the Windows "Properties > Details" text all read it from there
 (`packaging/make_version_info.py` writes the Windows text during the build).
 
 ## Steps
@@ -23,8 +23,8 @@ The version is written in one place only: `__version__` in `src/photorecover/__i
    ```
 
 6. The windows build workflow checks the tag matches `__version__`, builds and smoke-tests the program, and
-   publishes the release "Photo Recovery 0.2.0" with `PhotoRecovery-0.2.0-setup.exe` (the installer),
-   `PhotoRecovery-0.2.0-windows-portable.zip`, `SHA256SUMS.txt` and the changelog section as its notes.
+   publishes the release "Photo Lifeboat 0.2.0" with `PhotoLifeboat-0.2.0-setup.exe` (the installer),
+   `PhotoLifeboat-0.2.0-windows-portable.zip`, `SHA256SUMS.txt` and the changelog section as its notes.
 7. Download the installer, have it scanned by Windows Defender, and run it once.
 8. Set `__version__` to the next `.dev0` (for example `"0.2.1.dev0"`) in the next pull request.
 
