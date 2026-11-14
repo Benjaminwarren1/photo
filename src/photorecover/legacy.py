@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from .fat import SECTOR, Entry, FatVolume
+from .fat import SECTOR, SURVEY_MAGIC as MAGIC, Entry, FatVolume, magic_rows
+from .util import ceil_div
 
 CLUSTER_SIZES = [512 << k for k in range(8)]          # 512 bytes .. 64 KB
 JPEG = ("jpg", "jpeg", "jpe")
@@ -63,7 +64,7 @@ class LegacyFatVolume(FatVolume):
 
     def _claim(self, a: int, b: int) -> None:
         c0 = max(2, (a - self.data_off) // self.cl + 2)
-        c1 = min(self.ncl + 2, -(-(b - self.data_off) // self.cl) + 2)
+        c1 = min(self.ncl + 2, ceil_div(b - self.data_off, self.cl) + 2)
         if c1 > c0:
             self.fat[c0:c1] = self.eoc
 
@@ -75,7 +76,6 @@ class LegacyFatVolume(FatVolume):
         return iter(())
 
 
-from .fat import SURVEY_MAGIC as MAGIC  # noqa: E402
 
 
 def _signature_maps(m) -> dict[str, np.ndarray]:
@@ -87,10 +87,7 @@ def _signature_maps(m) -> dict[str, np.ndarray]:
         k = min(step, n - s0)
         head = np.frombuffer(m, np.uint8, k * SECTOR, s0 * SECTOR).reshape(k, SECTOR)[:, :8]
         for kind, (o, magic) in MAGIC.items():
-            ok = head[:, o] == magic[0]
-            for i in range(1, len(magic)):
-                ok &= head[:, o + i] == magic[i]
-            found[kind].append(np.flatnonzero(ok) + s0)
+            found[kind].append(np.flatnonzero(magic_rows(head, o, magic)) + s0)
     return {kind: np.concatenate(v) if v else np.zeros(0, np.int64) for kind, v in found.items()}
 
 
@@ -256,6 +253,7 @@ class UnreadableVolume(LegacyFatVolume):
 
 
 def _format_name(m) -> str:
+    """The file system on a drive this tool cannot read, in plain words."""
     from .fat import find_partitions
     for off in [0] + [o for o in find_partitions(m) if o]:
         b = bytes(m[off:off + 1100])
@@ -285,10 +283,3 @@ def open_unreadable(m, log=None) -> UnreadableVolume:
     v.what = what
     return v
 
-
-def _looks_reformatted(vol: FatVolume) -> bool:
-    """Nothing listed, yet data well beyond what the file system accounts for."""
-    alloc = vol.allocated()
-    if int(alloc[2:].sum()) > 16:
-        return False
-    return not vol.blank_clusters()[2:].all()

@@ -11,12 +11,13 @@ import io
 import os
 import struct
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image
 
 from . import _scan_py
+from .util import ceil_div
 
 try:  # the C decoder is roughly a thousand times faster
     from . import _scan as _impl
@@ -31,6 +32,12 @@ ERROR_NAMES = {1: "invalid Huffman code", 2: "block overrun", 3: "bad coefficien
                4: "unexpected marker", 5: "restart marker out of order", 6: "DC out of range"}
 
 
+def decode_workers() -> int:
+    """How many processor cores are worth using for decoding at once. The pure-Python decoder
+    holds the interpreter lock, so it only ever uses one."""
+    return min(8, os.cpu_count() or 1) if HAVE_C else 1
+
+
 class HeaderIncomplete(Exception):
     """The header runs past the data given; supply more bytes."""
 
@@ -41,6 +48,7 @@ class NotJpeg(Exception):
 
 @dataclass
 class JpegInfo:
+    """What a photo's header says: its size, how its data is coded, and its embedded preview."""
     width: int
     height: int
     progressive: bool
@@ -192,8 +200,8 @@ def parse_header(buf: bytes) -> JpegInfo:
             if len(comps) == 1:      # a single-component scan is never interleaved
                 info.comps = [(comps[0][0], 1, 1, comps[0][3])]
                 info.hmax = info.vmax = 1
-            info.mcus_x = -(-w // (8 * info.hmax))
-            info.mcus_y = -(-h // (8 * info.vmax))
+            info.mcus_x = ceil_div(w, 8 * info.hmax)
+            info.mcus_y = ceil_div(h, 8 * info.vmax)
             if unsupported:
                 info.supported, info.why_unsupported = False, unsupported
                 return info
@@ -356,7 +364,7 @@ class Stream:
         def part(cs):
             return _impl.screen_many(image, data_off, cl, cs.tobytes(), self.carry, st, self.info.spec, n_mcus)
 
-        workers = min(8, os.cpu_count() or 1) if HAVE_C and len(clusters) >= 2048 else 1
+        workers = decode_workers() if len(clusters) >= 2048 else 1
         if workers > 1:
             with ThreadPoolExecutor(workers) as ex:
                 parts = list(ex.map(part, np.array_split(clusters, workers)))
@@ -386,25 +394,3 @@ class Stream:
         s._memo = None
         return s
 
-
-def dc_planes(info: JpegInfo, dc: np.ndarray, mcus: int | None = None) -> np.ndarray:
-    """Turn per-MCU DC values into a YCbCr picture at 1/8 scale of the luma grid.
-    MCUs not decoded yet are mid grey."""
-    n = info.total_mcus if mcus is None else mcus
-    X, Y = info.mcus_x, info.mcus_y
-    planes = []
-    col = 0
-    for ci, _, _ in info.scan:
-        _, h, v, _ = info.comps[ci]
-        q = info.qdc[ci]
-        blk = dc[:, col:col + h * v].astype(np.float32) * (q / 8.0) + 128.0
-        blk[n:] = 128.0
-        col += h * v
-        p = blk.reshape(Y, X, v, h).transpose(0, 2, 1, 3).reshape(Y * v, X * h)
-        if h != info.hmax or v != info.vmax:
-            p = np.repeat(np.repeat(p, info.vmax // v, axis=0), info.hmax // h, axis=1)
-        planes.append(p)
-    if len(planes) == 1:
-        g = np.full_like(planes[0], 128.0)
-        planes += [g, g]
-    return np.clip(np.stack(planes, axis=-1), 0, 255)

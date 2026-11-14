@@ -26,6 +26,7 @@ th{background:#f3f3f3}.g0,.g1,.g3{color:#136c2e}.g2{color:#7a5b00}.g4,.g5{color:
 
 
 def write_html(path: Path, summary: dict, rows: list[dict]) -> None:
+    """The report a person reads: what happened to the card first, then one line per file."""
     e = html.escape
     counts = summary.get("counts", {})
     out = ["<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>",

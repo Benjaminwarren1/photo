@@ -12,12 +12,12 @@ from pathlib import Path
 
 import numpy as np
 
-from .fat import Entry, NotFat, _open_ro
-
-SECTOR = 512
+from .fat import ClusterVolume, Entry, NotFat, _open_ro
+from .util import ceil_div
 
 
 def find_exfat(m) -> int | None:
+    """Where the exFAT volume on this image starts: at the very beginning, or in a partition."""
     def is_boot(off: int) -> bool:
         return off + 512 <= len(m) and m[off + 3:off + 11] == b"EXFAT   " and m[off + 510:off + 512] == b"\x55\xaa"
 
@@ -30,7 +30,9 @@ def find_exfat(m) -> int | None:
     return None
 
 
-class ExFatVolume:
+class ExFatVolume(ClusterVolume):
+    """An exFAT file system, read straight from the image."""
+
     fat_bits = 0            # not a FAT16/FAT32 volume
     kind = "exFAT"
 
@@ -59,27 +61,9 @@ class ExFatVolume:
         self.fat = fat
         self._bitmap: np.ndarray | None = None
 
-    # ---- clusters (same interface as FatVolume) ---------------------------
-    @property
-    def max_cluster(self) -> int:
-        return self.ncl + 1
-
-    def valid(self, c: int) -> bool:
-        return 2 <= c <= self.max_cluster
-
-    def cluster(self, c: int) -> bytes:
-        o = self.data_off + (c - 2) * self.cl
-        return self.m[o:o + self.cl]
-
-    def read_chain(self, clusters, size: int | None = None) -> bytes:
-        d = b"".join(self.cluster(c) for c in clusters)
-        return d if size is None else d[:size]
-
-    def read_run(self, start: int, size: int) -> bytes:
-        o = self.data_off + (start - 2) * self.cl
-        return self.m[o:o + size]
-
+    # ---- clusters ---------------------------------------------------------
     def chain(self, start: int, limit: int | None = None) -> list[int] | None:
+        """Follow the FAT from start, stopping after limit clusters if given. None if the chain is broken."""
         out, c, seen = [], start, set()
         while True:
             if not self.valid(c) or c in seen:
@@ -94,21 +78,6 @@ class ExFatVolume:
             if nx < 2:
                 return None
             c = nx
-
-    survey = None
-
-    def blank_clusters(self) -> np.ndarray:
-        from .fat import blank_from_survey
-        known = blank_from_survey(self)
-        if known is not None:
-            return known
-        out = np.zeros(self.ncl + 2, bool)
-        step = max(1, (64 << 20) // self.cl)
-        for c0 in range(2, self.max_cluster + 1, step):
-            n = min(step, self.max_cluster + 1 - c0)
-            a = np.frombuffer(self.m, np.uint8, n * self.cl, self.data_off + (c0 - 2) * self.cl).reshape(n, self.cl)
-            out[c0:c0 + n] = (a == a[:, :1]).all(axis=1)
-        return out
 
     def allocated(self) -> np.ndarray:
         """In use according to the allocation bitmap."""
@@ -164,7 +133,7 @@ class ExFatVolume:
                 name = chars[:name_len * 2].decode("utf-16le", "replace")
                 deleted = not t & 0x80
                 e = Entry(name=name, short=name, deleted=deleted, is_dir=bool(attr & 0x10), start=start,
-                          start_hi_stored=0, size=size, where=where,
+                          size=size, where=where,
                           mtime=((stamp >> 25) + 1980, (stamp >> 21) & 15, (stamp >> 16) & 31,
                                  (stamp >> 11) & 31, (stamp >> 5) & 63))
                 e.contiguous = bool(flags & 0x02)
@@ -182,7 +151,8 @@ class ExFatVolume:
         return out, bad
 
     def _dir_clusters(self, e: Entry) -> list[int]:
-        n = max(1, -(-e.size // self.cl))
+        """The clusters of a folder, from its entry."""
+        n = max(1, ceil_div(e.size, self.cl))
         if getattr(e, "contiguous", False):
             return [c for c in range(e.start, e.start + n) if self.valid(c)]
         return self.chain(e.start) or ([e.start] if self.valid(e.start) else [])
@@ -190,7 +160,7 @@ class ExFatVolume:
     def hint_chain(self, e: Entry) -> list[int] | None:
         """Where the directory entry and the FAT say this file's data is. For a deleted
         file this is a strong hint, to be proved before it is believed."""
-        n = max(1, -(-e.size // self.cl))
+        n = max(1, ceil_div(e.size, self.cl))
         if getattr(e, "contiguous", False):
             if self.valid(e.start) and e.start + n - 1 <= self.max_cluster:
                 return list(range(e.start, e.start + n))
@@ -199,6 +169,8 @@ class ExFatVolume:
         return ch if ch and len(ch) == n else None
 
     def scan_entries(self, progress=None) -> list[Entry]:
+        """Every entry on the volume: the live tree from the root, plus folder data found anywhere
+        else on the card (folders that were deleted, or that a format left behind)."""
         out: list[Entry] = []
         seen: set[int] = set()
         dir_path: dict[int, str] = {}

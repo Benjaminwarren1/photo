@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import mmap
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+from .util import ceil_div, file_ext
 
 SECTOR = 512
 
@@ -21,12 +23,12 @@ class NotFat(Exception):
 
 @dataclass
 class Entry:
+    """One folder entry, live or deleted, as either file system records it."""
     name: str                 # long name if one survived, else the 8.3 name
     short: str
     deleted: bool             # marked 0xE5
     is_dir: bool
     start: int                # start cluster as stored (FAT numbering, first data cluster is 2)
-    start_hi_stored: int      # the high word as stored, FAT32 only
     size: int
     where: int                # cluster the entry was found in, 0 for the FAT16 root
     live: bool = False        # reachable from the root through intact FAT chains
@@ -37,7 +39,8 @@ class Entry:
 
     @property
     def ext(self) -> str:
-        return self.name.rpartition(".")[2].lower() if "." in self.name else ""
+        """The file ending, lower case, without the dot."""
+        return file_ext(self.name)
 
 
 def _open_ro(path) -> mmap.mmap | bytes:
@@ -141,8 +144,17 @@ def _slot_ok(a: np.ndarray) -> np.ndarray:
     return lfn | plain
 
 
+# The first bytes of each kind of file the survey notes: kind -> (where in the sector, the bytes)
 SURVEY_MAGIC = dict(jpg=(0, b"\xff\xd8\xff"), png=(0, b"\x89PNG"), mp4=(4, b"ftyp"), zip=(0, b"PK\x03\x04"),
                     gif=(0, b"GIF8"), tif=(0, b"II*\0"), tifm=(0, b"MM\0*"), riff=(0, b"RIFF"))
+
+
+def magic_rows(a: np.ndarray, offset: int, magic: bytes) -> np.ndarray:
+    """For many sectors at once (one per row of a): which of them hold these bytes at offset."""
+    ok = a[:, offset] == magic[0]
+    for i in range(1, len(magic)):
+        ok &= a[:, offset + i] == magic[i]
+    return ok
 
 
 class Survey:
@@ -165,12 +177,7 @@ class Survey:
             if len(idx):
                 rows = a if len(idx) == k else a[idx]
                 same[idx] = (rows == rows[:, :1]).all(axis=1)
-            sig = {}
-            for kind, (o, magic) in SURVEY_MAGIC.items():
-                ok = a[:, o] == magic[0]
-                for i in range(1, len(magic)):
-                    ok &= a[:, o + i] == magic[i]
-                sig[kind] = np.flatnonzero(ok) + s0
+            sig = {kind: np.flatnonzero(magic_rows(a, o, magic)) + s0 for kind, (o, magic) in SURVEY_MAGIC.items()}
             # a transport stream: the same marker byte at the start of every 188- or 192-byte packet
             sig["ts"] = np.flatnonzero((a[:, 0] == 0x47) & (a[:, 188] == 0x47) & (a[:, 376] == 0x47)
                                        | (a[:, 4] == 0x47) & (a[:, 196] == 0x47) & (a[:, 388] == 0x47)) + s0
@@ -194,7 +201,7 @@ class Survey:
     def blank(self, s0: int, count: int) -> np.ndarray:
         """Boolean per sector for sectors s0 .. s0+count: every byte in it the same."""
         out = np.zeros(count, bool)
-        for i in range(s0 // self._per, min(len(self._same), -(-(s0 + count) // self._per))):
+        for i in range(s0 // self._per, min(len(self._same), ceil_div(s0 + count, self._per))):
             base = i * self._per
             bits = np.unpackbits(self._same[i]).astype(bool)[:min(self._per, self.n - base)]
             a, b = max(s0, base), min(s0 + count, base + len(bits))
@@ -224,8 +231,62 @@ def blank_from_survey(vol) -> np.ndarray | None:
     return out
 
 
-class FatVolume:
-    survey: Survey | None = None
+class ClusterVolume:
+    """What every file system on a card has in common: a data area that starts at data_off and is
+    divided into ncl clusters of cl bytes, numbered from 2 (as FAT and exFAT both count them).
+    Subclasses set m (the image), data_off, cl and ncl, and say which clusters are in use."""
+
+    m: object
+    data_off: int
+    cl: int
+    ncl: int
+    survey: Survey | None = None      # the one read of the whole card, shared by every layout of it
+
+    @property
+    def max_cluster(self) -> int:
+        return self.ncl + 1
+
+    def valid(self, c: int) -> bool:
+        return 2 <= c <= self.max_cluster
+
+    def offset(self, c: int) -> int:
+        """Where cluster c begins in the image, in bytes."""
+        return self.data_off + (c - 2) * self.cl
+
+    def cluster(self, c: int) -> bytes:
+        o = self.offset(c)
+        return self.m[o:o + self.cl]
+
+    def read_chain(self, clusters, size: int | None = None) -> bytes:
+        """The bytes of these clusters, one after another, cut to size if given."""
+        d = b"".join(self.cluster(c) for c in clusters)
+        return d if size is None else d[:size]
+
+    def read_run(self, start: int, size: int) -> bytes:
+        """size bytes read straight on from the start of cluster start."""
+        o = self.offset(start)
+        return self.m[o:o + size]
+
+    def allocated(self) -> np.ndarray:
+        """Boolean per cluster number (index = cluster number): in use according to the file system."""
+        raise NotImplementedError
+
+    def blank_clusters(self) -> np.ndarray:
+        """Boolean per cluster number: every byte the same (never-used or erased space)."""
+        known = blank_from_survey(self)
+        if known is not None:
+            return known
+        out = np.zeros(self.ncl + 2, bool)
+        step = max(1, (64 << 20) // self.cl)
+        for c0 in range(2, self.max_cluster + 1, step):
+            n = min(step, self.max_cluster + 1 - c0)
+            a = np.frombuffer(self.m, np.uint8, n * self.cl, self.offset(c0)).reshape(n, self.cl)
+            out[c0:c0 + n] = (a == a[:, :1]).all(axis=1)
+        return out
+
+
+class FatVolume(ClusterVolume):
+    """A FAT16 or FAT32 file system, read straight from the image."""
 
     def __init__(self, source, partition_offset: int | None = None, boot_at: int | None = None):
         self.m = _open_ro(source) if isinstance(source, (str, Path)) else source
@@ -251,7 +312,7 @@ class FatVolume:
         self.fat_size = fatsz * bps
         self.root_off = self.fat_off + nfat * self.fat_size
         self.root_size = rootent * 32
-        root_secs = -(-self.root_size // bps)
+        root_secs = ceil_div(self.root_size, bps)
         self.data_off = self.root_off + root_secs * bps
         avail = min(self.part + tot * bps, len(self.m)) - self.data_off
         self.ncl = max(0, avail // self.cl)          # number of data clusters
@@ -277,25 +338,6 @@ class FatVolume:
         return None          # FAT16/32 wipe a deleted file's chain; there is nothing to go on
 
     # ---- clusters ---------------------------------------------------------
-    @property
-    def max_cluster(self) -> int:
-        return self.ncl + 1
-
-    def valid(self, c: int) -> bool:
-        return 2 <= c <= self.max_cluster
-
-    def cluster(self, c: int) -> bytes:
-        o = self.data_off + (c - 2) * self.cl
-        return self.m[o:o + self.cl]
-
-    def read_chain(self, clusters, size: int | None = None) -> bytes:
-        d = b"".join(self.cluster(c) for c in clusters)
-        return d if size is None else d[:size]
-
-    def read_run(self, start: int, size: int) -> bytes:
-        o = self.data_off + (start - 2) * self.cl
-        return self.m[o:o + size]
-
     def chain(self, start: int, limit: int = 1 << 22) -> list[int] | None:
         """Follow the FAT from start. None if the chain is broken."""
         out, c, seen = [], start, set()
@@ -314,19 +356,6 @@ class FatVolume:
     def allocated(self) -> np.ndarray:
         """Boolean per cluster number (index = cluster number): in use according to the FAT."""
         return self.fat != 0
-
-    def blank_clusters(self) -> np.ndarray:
-        """Boolean per cluster number: every byte the same (never-used or erased space)."""
-        known = blank_from_survey(self)
-        if known is not None:
-            return known
-        out = np.zeros(self.ncl + 2, bool)
-        step = max(1, (64 << 20) // self.cl)
-        for c0 in range(2, self.max_cluster + 1, step):
-            n = min(step, self.max_cluster + 1 - c0)
-            a = np.frombuffer(self.m, np.uint8, n * self.cl, self.data_off + (c0 - 2) * self.cl).reshape(n, self.cl)
-            out[c0:c0 + n] = (a == a[:, :1]).all(axis=1)
-        return out
 
     # ---- directories ------------------------------------------------------
     def parse_dir(self, buf: bytes, where: int, stop_on_bad: bool = False) -> tuple[list[Entry], int, int]:
@@ -385,7 +414,7 @@ class FatVolume:
                 long = shown
             wt, wd = struct.unpack_from("<HH", e, 22)
             out.append(Entry(name=long or short, short=short, deleted=deleted, is_dir=bool(attr & 0x10),
-                             start=lo | (hi << 16), start_hi_stored=hi, size=size, where=where,
+                             start=lo | (hi << 16), size=size, where=where,
                              mtime=((wd >> 9) + 1980, (wd >> 5) & 15, wd & 31, wt >> 11, (wt >> 5) & 63)))
             lfn = []
         return out, used, bad
@@ -574,7 +603,7 @@ class FatVolume:
 
     def _chain_fits(self, e: Entry) -> bool:
         ch = self.chain(e.start)
-        return ch is not None and len(ch) == max(1, -(-e.size // self.cl))
+        return ch is not None and len(ch) == max(1, ceil_div(e.size, self.cl))
 
     def _plausible(self, ents: list[Entry], used: int) -> bool:
         """Is a cluster with no dot entries really directory data? Entropy-coded

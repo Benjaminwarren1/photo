@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .util import ceil_div, next_free
+
 CONTAINERS = {"mp4", "mov", "3gp", "3g2", "m4v"}
 TOP_BOXES = {b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide", b"uuid", b"meta", b"udta", b"pnot", b"moof",
              b"mfra", b"sidx", b"styp", b"junk"}
@@ -22,6 +24,7 @@ MAX_MOOV = 64 << 20
 
 
 def boxes(buf, a: int, b: int):
+    """(type, start, size, header length) of each box between a and b; stops at the first that does not fit."""
     while a + 8 <= b:
         size, typ = struct.unpack_from(">I4s", buf, a)
         head = 8
@@ -38,6 +41,7 @@ def boxes(buf, a: int, b: int):
 
 @dataclass
 class Track:
+    """One track of a video (picture, sound, data) and where each of its samples lies in the file."""
     codec: str
     handler: str
     samples: list[tuple[int, int]]      # (file offset, size)
@@ -53,6 +57,7 @@ def parse_moov(buf: bytes) -> list[Track] | None:
 
 
 def _parse_moov(buf: bytes) -> list[Track]:
+    """Read every track's sample table: sizes (stsz), chunk offsets (stco/co64), samples per chunk (stsc)."""
     n = len(buf)
 
     def find(a, b, path):
@@ -135,28 +140,26 @@ def checkpoint_ok(tr: Track, data: bytes, size: int) -> bool | None:
 
 @dataclass
 class VideoResult:
+    """How rebuilding one video turned out."""
     status: str = "failed"            # complete | partial | failed
     reason: str = ""
     chain: list[int] = field(default_factory=list)   # -1 = cluster missing on the card
     checked: int = 0
     passed: int = 0
-    joins: int = 0
     uncertain_joins: int = 0
     missing: int = 0
 
 
 class VideoRebuilder:
+    """Rebuilds videos on one card from their own index (see the top of this file)."""
+
     def __init__(self, vol, avail: np.ndarray):
         self.vol, self.avail = vol, avail
         self.img = np.frombuffer(vol.m, np.uint8)
 
     def _next(self, c: int, used: set[int]) -> int | None:
-        c += 1
-        while c <= self.vol.max_cluster:
-            if self.avail[c] and c not in used:
-                return c
-            c += 1
-        return None
+        """The next free cluster after c that this video is not already using."""
+        return next_free(self.avail, c, used, self.vol.max_cluster)
 
     def _prev(self, c: int, used: set[int]) -> int | None:
         c -= 1
@@ -165,9 +168,9 @@ class VideoRebuilder:
         return None
 
     def _find_moov(self, start: int, size: int):
-        """Returns (moov bytes, file offset of moov, card clusters holding it) or None."""
+        """Returns (moov bytes, file offset of moov, card clusters holding it, which cluster of the
+        file the first of those is) or None."""
         vol, cl = self.vol, self.vol.cl
-        n = -(-size // cl)
         head = vol.read_run(start, min(size, 16 * cl))
         pos, mdat_end = 0, None
         while pos + 8 <= len(head):
@@ -220,6 +223,9 @@ class VideoRebuilder:
         return None
 
     def rebuild(self, start: int, size: int) -> VideoResult:
+        """Walk the video that starts at cluster start, cluster by cluster, checking every frame and
+        sound packet its index places in each one. Where they stop matching, search the card for
+        the cluster where they match again; leave a gap (-1) where no single cluster does."""
         vol, cl = self.vol, self.vol.cl
         res = VideoResult()
         if not vol.valid(start):
@@ -232,12 +238,12 @@ class VideoRebuilder:
         if found is None:
             res.reason = "the video's index (moov) could not be found on the card"
             return res
-        moov, moov_off, moov_clusters, moov_k = found
+        moov, _moov_off, moov_clusters, moov_k = found
         tracks = parse_moov(moov)
         if not tracks:
             res.reason = "the video's index is damaged"
             return res
-        n = -(-size // cl)
+        n = ceil_div(size, cl)
         # learn the usual first byte of tracks that have no fixed signature, from the trusted first cluster
         # (the first few clusters are read as one run; if that is wrong the bytes will not agree
         # with each other and nothing is learned)
@@ -319,7 +325,6 @@ class VideoRebuilder:
                 k += 1
                 continue
             c = scored[0][1]
-            res.joins += 1
             # clusters between the last proven one and k carry no checkpoint. The new piece
             # starts where free space starts before c; walk back as far as that allows.
             back, b, cc = [], k, c

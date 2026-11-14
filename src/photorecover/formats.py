@@ -47,6 +47,7 @@ class Tiff:
             todo += self._table(off)
 
     def _values(self, typ: int, count: int, field: bytes, limit: int = 4096) -> list[int] | bytes | None:
+        """The values of one table entry (read from where it points when they do not fit in it)."""
         size = _SIZE.get(typ)
         if size is None:
             return None
@@ -71,6 +72,7 @@ class Tiff:
         return list(struct.unpack(self.e + code * n, raw[:n * size]))
 
     def _table(self, off: int) -> list[int]:
+        """Read the table at off, note the blocks it lists, and return where further tables are."""
         buf, pos, e = self.buf, self.pos, self.e
         if off + 2 > self.end - pos:
             self.ok = False
@@ -129,6 +131,7 @@ class Tiff:
 
     @property
     def ext(self) -> str:
+        """The file ending a camera would give this file (nef, cr2, dng ...)."""
         head = bytes(self.buf[self.pos + 8:self.pos + 10])
         make = self.make.upper()
         first = bytes(self.buf[self.pos:self.pos + 4])

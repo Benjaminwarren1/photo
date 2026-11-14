@@ -21,6 +21,8 @@ SECTOR = 512
 
 @dataclass
 class Drive:
+    """One whole physical drive attached to the computer."""
+
     id: str            # stable for this session, e.g. "PhysicalDrive2" or "sdb"
     path: str          # what to open for raw reading
     size: int
@@ -130,6 +132,7 @@ def _drive_of_path_unix(path: Path) -> str | None:
 
 
 def free_space(folder: Path) -> int:
+    """Bytes free on the drive a folder is (or would be) on."""
     p = Path(folder)
     while not p.exists() and p.parent != p:
         p = p.parent
@@ -167,6 +170,7 @@ def dest_problem(folder: Path, size: int | None, free: int | None = None, fs: st
 
 
 def _device_size(f, path: str, hint: int | None) -> int:
+    """How many bytes the card (or image file) holds; hint wins when it is given."""
     if hint:
         return hint
     if sys.platform == "win32":          # a raw drive has no file size; ask the drive itself
@@ -503,6 +507,7 @@ def clone(source: str, dest: Path, size: int | None = None, status_file: Path | 
 
 
 def is_admin() -> bool:
+    """Is this program running with administrator (or root) rights?"""
     if sys.platform == "win32":
         import ctypes
         try:
