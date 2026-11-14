@@ -3,8 +3,13 @@
 photolifeboat                     start the wizard (also what double-clicking the .exe does)
 photolifeboat recover IMAGE       recover from a card image; --json prints a machine-readable summary
 photolifeboat pilot IMAGE         recover, then take close-call decisions as JSON lines (for another program)
-photolifeboat drives              list attached drives
+photolifeboat drives              list attached drives (--json for programs)
 photolifeboat clone SOURCE DEST   copy a card to an image file (used by the wizard, needs admin rights)
+photolifeboat sheet FOLDER        contact sheets of recovered photos, for checking them by eye
+photolifeboat guide               how an AI assistant should drive this tool, step by step
+photolifeboat mcp                 run as an MCP server, so desktop AI apps can drive it
+
+The card itself is only ever read. Nothing here can format, repair or write to a card.
 """
 from __future__ import annotations
 
@@ -22,17 +27,23 @@ from .recover import Recovery
 
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="photolifeboat",
-                                 description="Rescue deleted photos from a memory card image. The image is never changed.")
+                                 description="Rescue deleted photos from a memory card image. The image is never changed.",
+                                 epilog="AI assistants: run 'photolifeboat guide' first. Exit codes: 0 done, 1 a check or "
+                                        "copy failed, 2 bad arguments, 3 the image cannot be read, 4 recovered but not "
+                                        "all results could be saved.")
     ap.add_argument("--version", action="version", version=__version__)
     sub = ap.add_subparsers(dest="cmd")
     w = sub.add_parser("wizard", help="start the step-by-step wizard in your browser (the default)")
     w.add_argument("--no-browser", action="store_true")
-    sub.add_parser("drives", help="list attached drives")
+    d = sub.add_parser("drives", help="list attached drives")
+    d.add_argument("--json", action="store_true", help="print the drives as JSON, for other programs")
     c = sub.add_parser("clone", help="copy a whole card to an image file, read-only")
-    c.add_argument("source")
-    c.add_argument("dest", type=Path)
+    c.add_argument("source", help="the drive (an id from 'drives', such as PhysicalDrive2 or sdb) or a file")
+    c.add_argument("dest", type=Path, help="the image file to create, on a different drive")
     c.add_argument("--size", type=int)
     c.add_argument("--status", type=Path)
+    c.add_argument("--json", action="store_true",
+                   help="progress as JSON lines on standard output, the last one with the result")
     k = sub.add_parser("pick")
     k.add_argument("kind", choices=["file", "folder"])
     r = sub.add_parser("recover", help="recover everything possible from a card image")
@@ -41,10 +52,23 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--json", action="store_true", help="print the summary as JSON, for other programs")
     r.add_argument("--include-existing", action="store_true",
                    help="also copy out the files that were never deleted (always done when the card's start is damaged)")
+    r.add_argument("--progress", action="store_true",
+                   help="report each step and how far it has got as JSON lines on standard error")
     r.add_argument("--profile", type=Path, help="for developers: write where the time went to this text file")
     p = sub.add_parser("pilot", help="recover, then let another program decide the close calls using JSON lines")
     p.add_argument("image", type=Path)
     p.add_argument("--out", type=Path)
+    p.add_argument("--progress", action="store_true", help="as for recover")
+    s = sub.add_parser("sheet", help="contact sheets: numbered grids of recovered photos, for checking them by eye")
+    s.add_argument("folder", type=Path, help="a results folder (the one holding report.json)")
+    s.add_argument("--which", choices=["complete", "partial", "all"], default="complete",
+                   help="which photos to show (default: complete). Small pictures (under 640 px, such as "
+                        "thumbnails and app images) are always left out")
+    s.add_argument("--to", type=Path, help="where to save the sheets (default: a new temporary folder)")
+    s.add_argument("--per-sheet", type=int, default=20)
+    s.add_argument("--json", action="store_true")
+    sub.add_parser("guide", help="how an AI assistant should drive this tool (read this first)")
+    sub.add_parser("mcp", help="run as an MCP server on standard input and output, for AI apps")
     k = sub.add_parser("check", help="run the final check on photo files: is each one whole, and does it match its own preview?")
     k.add_argument("files", type=Path, nargs="+")
     return ap
@@ -57,7 +81,11 @@ def main(argv=None) -> int:
     if a.cmd in (None, "wizard"):
         from . import wizard
         return wizard.run(open_browser=not getattr(a, "no_browser", False))
-    command = {"check": _check, "drives": _drives, "clone": _clone, "pick": _pick}.get(a.cmd, _recover)
+    if a.cmd == "mcp":
+        from . import mcp_server
+        return mcp_server.serve()
+    command = {"check": _check, "drives": _drives, "clone": _clone, "pick": _pick, "sheet": _sheet,
+               "guide": _guide}.get(a.cmd, _recover)
     return command(a)
 
 
@@ -79,6 +107,10 @@ def _check(a) -> int:
 def _drives(a) -> int:
     """photolifeboat drives: the drives attached to this computer."""
     from . import device
+    if a.json:
+        from .agent import drive_info
+        print(json.dumps([drive_info(d) for d in device.list_drives()]))
+        return 0
     for d in device.list_drives():
         kind = "system" if d.system else "removable" if d.removable else "fixed"
         print(f"{d.id:18} {kind:10} {d.label()}")
@@ -91,16 +123,25 @@ def _clone(a) -> int:
     from . import device
     quiet = bool(a.status)
     show = None if quiet else (lambda i: print(f"\r{i['done'] >> 20} MB", end="", flush=True))
+    if a.json:
+        show = _json_lines(every=2.0)
 
     def stop(message: str, error: str) -> int:
+        if a.json:
+            print(json.dumps(dict(state="error", error=error, message=message)))
         if quiet:
             Path(a.status).write_text(json.dumps(dict(state="error", done=0, total=a.size or 0, bad_bytes=0,
                                                       seconds=0.0, error=error, message=message)))
-        else:
+        elif not a.json:
             print(message)
         return 1
 
+    if device.is_device(a.dest):
+        return stop("The copy must be saved as a file in a folder, not onto a drive.", "device")
     known = _named_drive(a.source, a.size)
+    if known is not None and known.system:
+        return stop("That drive holds this computer's own system, so it is not a memory card. "
+                    "Run 'drives' to see which drive the card is.", "system")
     if known is not None:
         a.source, a.size = known.path, a.size or known.size
     try:
@@ -116,9 +157,23 @@ def _clone(a) -> int:
     if known is not None and sys.platform == "win32" and not device.is_admin():
         return _clone_as_admin(a, known, quiet, show)
     info = device.clone(a.source, a.dest, a.size, a.status, show)
-    if not a.status:
+    if a.json:
+        print(json.dumps(info), flush=True)
+    elif not a.status:
         print("\n" + (info.get("message") or f"Done. SHA-256 {info.get('sha256')}"))
     return 0 if info["state"] == "done" else 1
+
+
+def _json_lines(every: float):
+    """A progress function that prints the copy's state as a JSON line at most once every few seconds."""
+    import time
+    last = [0.0]
+
+    def show(info: dict) -> None:
+        if time.time() - last[0] >= every:
+            last[0] = time.time()
+            print(json.dumps(info), flush=True)
+    return show
 
 
 def _named_drive(source: str, size: int | None):
@@ -155,8 +210,11 @@ def _clone_as_admin(a, known, quiet: bool, show) -> int:
         if show and "done" in info:
             show(info)
         time.sleep(0.5)
+    if a.json:
+        print(json.dumps(info), flush=True)
     if not quiet:
         status.unlink(missing_ok=True)
+    if not quiet and not a.json:
         print("\n" + (info.get("message") or f"Done. SHA-256 {info.get('sha256')}"))
     return 0 if info["state"] == "done" else 1
 
@@ -176,32 +234,80 @@ def _pick(a) -> int:
 
 def _recover(a) -> int:
     """photolifeboat recover IMAGE (and pilot IMAGE): recover everything possible from a card image."""
+    from .device import is_device
+    as_json = getattr(a, "json", False) or a.cmd == "pilot"
+
+    def fail(message: str, code: int, error: str) -> int:
+        print(message, file=sys.stderr)
+        if as_json:
+            print(json.dumps(dict(error=error, message=message, exit_code=code)))
+        return code
+
+    if is_device(a.image):
+        return fail(f"{a.image} is a drive, not an image file. Recovery always works on a copy, so the card is "
+                    "never touched: copy it first with 'photolifeboat clone <drive> <file on another drive>'.",
+                    2, "device")
     if not a.image.is_file():
-        print(f"Cannot find the image file: {a.image}", file=sys.stderr)
-        return 2
+        return fail(f"Cannot find the image file: {a.image}", 2, "missing")
     out = a.out or a.image.with_name(a.image.stem + " recovered")
     if out.resolve() == a.image.resolve():
-        print("The output folder cannot be the image itself.", file=sys.stderr)
-        return 2
-    log = (lambda m: None) if getattr(a, "json", False) or a.cmd == "pilot" else (lambda m: print(m, flush=True))
+        return fail("The output folder cannot be the image itself.", 2, "same")
+    if is_device(out):
+        return fail("The results must go in a folder, not onto a drive.", 2, "device")
+    progress = None
+    if getattr(a, "progress", False):
+        from .agent import Progress
+        progress = log = Progress()
+    else:
+        log = (lambda m: None) if as_json else (lambda m: print(m, flush=True))
     try:
         rec = Recovery(a.image, out, log)
     except NotFat as e:
-        print(f"Cannot read this card image: {e}", file=sys.stderr)
-        return 3
+        return fail(f"Cannot read this card image: {e}", 3, "unreadable")
     rec.include_existing = bool(getattr(a, "include_existing", False))
+    if progress:
+        progress.start(rec)
     if a.cmd == "pilot":
-        rec.log = lambda m: None
-        return pilot(rec, out)
+        if not progress:
+            rec.log = lambda m: None
+        return pilot(rec, out, progress=progress)
     if getattr(a, "profile", None):
         summary = _profiled(rec, a.profile)
     else:
         summary = rec.run()
+    if progress:
+        progress.stop()
     if a.json:
         print(json.dumps(dict(summary, out=str(out))))
     else:
         _print_summary(summary, out)
     return 4 if summary.get("report_error") or any(f["kind"] == "out_full" for f in summary.get("findings") or []) else 0
+
+
+def _guide(a) -> int:
+    """photolifeboat guide: the step-by-step guide an AI assistant should read before helping someone."""
+    from .agent import GUIDE
+    print(GUIDE)
+    return 0
+
+
+def _sheet(a) -> int:
+    """photolifeboat sheet FOLDER: numbered grids of recovered photos, so many can be looked over at once."""
+    import tempfile
+    from .agent import make_sheets
+    if not (a.folder / "report.json").is_file():
+        print(f"No report.json in {a.folder}: give the results folder of a recovery.", file=sys.stderr)
+        return 2
+    to = a.to or Path(tempfile.mkdtemp(prefix="photolifeboat-sheets-"))
+    sheets = make_sheets(a.folder, to, a.which, max(1, a.per_sheet))
+    if a.json:
+        print(json.dumps(dict(folder=str(a.folder), sheets=sheets)))
+    else:
+        for s in sheets:
+            first, last = s["photos"][0]["number"], s["photos"][-1]["number"]
+            print(f"{s['sheet']}: photos {first}-{last}")
+        print(f"{sum(len(s['photos']) for s in sheets)} photos on {len(sheets)} sheets in {to}")
+    return 0
 
 
 def _profiled(rec: Recovery, to: Path) -> dict:
@@ -236,7 +342,7 @@ def _print_summary(summary: dict, out: Path) -> None:
         print(f"\nSaved to: {out}\nFull details: {out / 'report.html'}")
 
 
-def pilot(rec: Recovery, out: Path, stdin=None, stdout=None) -> int:
+def pilot(rec: Recovery, out: Path, stdin=None, stdout=None, progress=None) -> int:
     """Lets another program (a script, or an AI assistant) decide the close calls.
 
     One JSON object per line in, one per line out. After the first line, which is
@@ -252,7 +358,10 @@ def pilot(rec: Recovery, out: Path, stdin=None, stdout=None) -> int:
         stdout.write(json.dumps(obj) + "\n")
         stdout.flush()
 
-    say(dict(rec.run(), out=str(out), unresolved=len(rec.review_queue())))
+    summary = rec.run()
+    if progress:
+        progress.stop()
+    say(dict(summary, out=str(out), unresolved=len(rec.review_queue())))
     for line in stdin:
         if not line.strip():
             continue
