@@ -1,0 +1,94 @@
+name: linux build
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: linux-build-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: write
+jobs:
+  build:
+    # Built on the oldest Ubuntu GitHub still offers, so the AppImage also runs on older systems: it needs
+    # glibc 2.35 or newer (Ubuntu 22.04, Linux Mint 21, Debian 12, Fedora 36 and later).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The Qt libraries the window needs (PyInstaller copies them into the build) and a screen-less X server
+      # for the window smoke test.
+      - name: Install system libraries
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xvfb libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 libxcb-randr0 libxcb-render-util0 libxcb-image0 \
+            libnss3 libxcomposite1 libxdamage1 libxrandr2 libxtst6 libasound2 libxkbfile1 libfontconfig1 dbus
+      - run: python -m pip install ".[window]" "pywebview[qt]" pyinstaller
+      - run: python -c "from photolifeboat import jpeg; assert jpeg.HAVE_C, 'C decoder was not built'"
+      - name: Read the version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then v=$(python packaging/make_version_info.py --check-tag "$GITHUB_REF"); else v=$(python packaging/make_version_info.py); fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - run: pyinstaller --noconfirm --clean packaging/PhotoLifeboat.spec
+      - name: Build the AppImage
+        run: |
+          packaging/linux/build_appimage.sh "${{ steps.version.outputs.version }}"
+          ls -la PhotoLifeboat-*.AppImage
+      # Build machines have no FUSE, so the AppImage is told to unpack itself instead of mounting.
+      - name: Smoke test the AppImage on a synthetic card
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          app=$(ls PhotoLifeboat-*.AppImage)
+          python -c "from photolifeboat.synth.scenarios import used_card; b = used_card(fat_type=16, cluster_size=16384, size_mb=64, seed=31, photos=12); b.delete_all(); b.save('smoke.img')"
+          ./$app --version
+          ./$app drives
+          ./$app recover smoke.img --out smoke-out --json | tee smoke.json
+          python -c "import json; s = json.load(open('smoke.json')); assert s['fast_decoder'] and s['counts']['Verified'] >= 8, s"
+      - name: Smoke test the app window
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          export PHOTOLIFEBOAT_SMOKE_WINDOW="$PWD/window.txt"
+          timeout 180 xvfb-run -a ./$(ls PhotoLifeboat-*.AppImage) || true
+          cat window.txt
+          grep -q "Get your photos back" window.txt || { echo "The app window did not show the first step"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhotoLifeboat-linux
+          path: PhotoLifeboat-*.AppImage
+      # The newest build is added to the "dev-build" pre-release beside the Windows one, for trying out.
+      - name: Add to the dev-build pre-release
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp PhotoLifeboat-*.AppImage PhotoLifeboat-linux-x86_64.AppImage
+          sha="${{ github.event.pull_request.head.sha || github.sha }}"
+          gh release view dev-build > /dev/null 2>&1 || gh release create dev-build --prerelease --title "Development build" --notes "Rebuilt automatically from the newest code. Unsigned and untested: for trying things out only." --target "$sha" || true
+          gh release upload dev-build PhotoLifeboat-linux-x86_64.AppImage --clobber
+      # A version tag: the windows build workflow creates the numbered release (see docs/RELEASING.md). Wait for
+      # it, then add the AppImage and its line in SHA256SUMS.txt.
+      - name: Add to the numbered release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          app="PhotoLifeboat-${{ steps.version.outputs.version }}-x86_64.AppImage"
+          # Ready once it is published with the Windows files' SHA256SUMS.txt (so the two never collide).
+          ready() { gh release view "$GITHUB_REF_NAME" --json isDraft,assets -q 'select(.isDraft == false) | .assets[].name' 2>/dev/null | grep -qx SHA256SUMS.txt; }
+          for i in $(seq 1 90); do ready && break; sleep 20; done
+          ready || { echo "The windows build did not publish the release within 30 minutes"; exit 1; }
+          gh release upload "$GITHUB_REF_NAME" "$app" --clobber
+          rm -f SHA256SUMS.txt
+          gh release download "$GITHUB_REF_NAME" -p SHA256SUMS.txt
+          grep -v "AppImage" SHA256SUMS.txt > sums.txt || true
+          sha256sum "$app" >> sums.txt
+          mv sums.txt SHA256SUMS.txt
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS.txt --clobber

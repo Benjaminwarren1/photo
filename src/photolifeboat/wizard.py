@@ -2,7 +2,7 @@
 someone from "I plugged my card in" to a Recovered folder.
 
 The page is shown in a window of its own (pywebview, which uses the web engine built into the system:
-Edge WebView2 on Windows), or in the browser if that is not available. Either way it talks to this
+Edge WebView2 on Windows, Qt WebEngine in the Linux build), or in the browser if that is not available. Either way it talks to this
 process over 127.0.0.1 with a random token. Nothing is sent anywhere else.
 """
 from __future__ import annotations
@@ -118,7 +118,7 @@ class Session:
         elif action == "restart":
             self.__init__()
         elif action == "open" and body.get("what") == "donate":
-            webbrowser.open(DONATE_URL)
+            open_link(DONATE_URL)
         elif action == "open":
             target = self.folder / "report.html" if body.get("what") == "report" else self.folder
             if target.exists():
@@ -133,7 +133,8 @@ class Session:
         self.found = device.new_drives(self.before, device.list_drives())
         if not self.found:
             self.message = ("No new card has appeared yet. Push it in firmly, wait a few seconds and try again. "
-                            "If Windows asks to format or scan the card, choose Cancel.")
+                            + ("If Windows asks to format or scan the card, choose Cancel." if sys.platform == "win32"
+                               else "If your computer offers to format the card, say no."))
             return
         self.drive = self.found[0] if len(self.found) == 1 else None
         self.step, self.message = "confirm", ""
@@ -258,7 +259,7 @@ class Session:
             if self.step == "cloning":
                 self.poll_clone()
             s = dict(step=self.step, message=self.message, version=__version__, folder=str(self.folder),
-                     windows=sys.platform == "win32", place=self.place, window=PICKER is not None,
+                     windows=sys.platform == "win32", linux=device.IS_LINUX, place=self.place, window=PICKER is not None,
                      can_resume=bool(getattr(self, "can_resume", False)),
                      found=[device.drive_dict(d) for d in self.found],
                      drive=device.drive_dict(self.drive) if self.drive else None)
@@ -293,13 +294,28 @@ def pick_path(kind: str) -> str:
 DONATE_URL = "https://ko-fi.com/photolifeboat"
 
 
-def open_in_system(path: Path) -> None:
+def open_in_system(path) -> None:
+    """Open a folder, file or web link in the program the computer normally uses for it."""
     if sys.platform == "win32":
         os.startfile(str(path))  # noqa: S606
     elif sys.platform == "darwin":
         subprocess.Popen(["open", str(path)])
     else:
-        subprocess.Popen(["xdg-open", str(path)])
+        from . import linux
+        try:
+            subprocess.Popen(["xdg-open", str(path)], env=linux.outside_env(), stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            webbrowser.open(str(path))
+
+
+def open_link(url: str) -> None:
+    """A web page in the person's browser. On Linux through xdg-open, so that the packaged program's own
+    libraries are not handed to the browser."""
+    if device.IS_LINUX:
+        open_in_system(url)
+    else:
+        webbrowser.open(url)
 
 
 def make_server(session: Session, token: str, port: int = 0) -> ThreadingHTTPServer:
@@ -359,6 +375,16 @@ def make_server(session: Session, token: str, port: int = 0) -> ThreadingHTTPSer
 QUIT = None       # set by the window: closes it
 
 
+def _engine() -> str | None:
+    """Which web engine pywebview should use. Windows: Edge WebView2. The Linux build carries its own Qt web
+    engine (so it does not depend on what the desktop has installed); from source, pywebview picks GTK or Qt."""
+    if sys.platform == "win32":
+        return "edgechromium"
+    if device.IS_LINUX and getattr(sys, "frozen", False):
+        return "qt"
+    return None
+
+
 def _window(session: Session, url: str) -> bool:
     """Show the wizard in a window of its own. Returns False if no window can be made here (no pywebview,
     or no web engine, such as a very old Windows 10 without WebView2), so the browser is used instead."""
@@ -416,8 +442,7 @@ def _window(session: Session, url: str) -> bool:
                                         "and you will need to start again. Close anyway?",
              "global.ok": "Close", "global.cancel": "Keep working"}
     try:
-        webview.start(watch, localization=words, private_mode=True,
-                      gui="edgechromium" if sys.platform == "win32" else None)
+        webview.start(watch, localization=words, private_mode=True, gui=_engine())
     except Exception:  # noqa: BLE001
         PICKER = QUIT = None
         return False
@@ -441,7 +466,7 @@ def run(open_browser: bool = True) -> int:
     if sys.stdout is not None:
         print(f"Photo Lifeboat is running. If your browser did not open, go to:\n  {url}\nClose this window to stop.", flush=True)
     if open_browser:
-        threading.Timer(0.3, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.3, lambda: open_link(url)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

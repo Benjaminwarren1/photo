@@ -106,6 +106,7 @@ const views={
   ${sp?(sp.ok?`<p class="soft">The copy needs ${size(sp.need)}; ${size(sp.free)} is free.${sp.tight?" That is enough for the copy. If a great deal is recovered it could still run short, and the program will say so if it does.":""}</p>`
    :`<p class="note"><b>There is not enough room.</b> The copy needs ${size(sp.need)} and only ${size(sp.free)} is free. Press <b>Change</b> and choose another drive, such as an external one.</p>`):""}
   ${S.windows?`<p class="soft">Windows will ask for permission to read the card. Choose Yes.</p>`:""}
+  ${S.linux?`<p class="soft">If your computer asks for your password, type it to let Photo Lifeboat read the card. It only ever reads the card, never changes it.</p>`:""}
   ${err()}<div class="actions"><button class="go" ${S.drive?"":"disabled"} onclick="api('start_clone')">Yes, copy this card</button>
   <button onclick="api('restart')">No, start again</button></div>`;},
  cloning(){const c=S.clone||{},p=c.total?c.done/c.total:0,left=c.done&&c.seconds?Math.round((c.total-c.done)/(c.done/c.seconds)/60):null;

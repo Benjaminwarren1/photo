@@ -115,7 +115,16 @@ def _clone(a) -> int:
     # Reading a drive needs administrator rights on Windows, which only the helper started here asks for.
     if known is not None and sys.platform == "win32" and not device.is_admin():
         return _clone_as_admin(a, known, quiet, show)
-    info = device.clone(a.source, a.dest, a.size, a.status, show)
+    # On Linux most cards can be read without root (see linux.py); only if not is the password window used.
+    if (known is not None and device.IS_LINUX and not device.is_admin()
+            and not os.environ.get("PHOTOLIFEBOAT_FAKE_DRIVES") and not device.can_open(a.source)):
+        return _clone_as_admin(a, known, quiet, show)
+    try:
+        info = device.clone(a.source, a.dest, a.size, a.status, show)
+    finally:
+        if device.IS_LINUX:          # run through pkexec or sudo: hand the copy back to the person
+            from . import linux
+            linux.give_back([a.dest, f"{a.dest}.map.json", f"{a.dest}.bad.json", a.status])
     if not a.status:
         print("\n" + (info.get("message") or f"Done. SHA-256 {info.get('sha256')}"))
     return 0 if info["state"] == "done" else 1
@@ -143,7 +152,7 @@ def _clone_as_admin(a, known, quiet: bool, show) -> int:
     import time
     from . import device
     status = Path(a.status) if quiet else Path(tempfile.gettempdir()) / f"photolifeboat-clone-{os.getpid()}.json"
-    device.start_clone(known, a.dest, status)
+    proc = device.start_clone(known, a.dest, status, elevate=True)
     info = {}
     while True:
         try:
@@ -151,6 +160,16 @@ def _clone_as_admin(a, known, quiet: bool, show) -> int:
         except (OSError, ValueError):
             pass
         if info.get("state") in ("done", "error", "cancelled"):
+            break
+        if proc is not None and proc.poll() is not None:
+            # The helper has ended without saying how it went: the password window was refused or closed.
+            try:
+                info = json.loads(status.read_text())
+            except (OSError, ValueError):
+                info = {}
+            if info.get("state") not in ("done", "error", "cancelled"):
+                info = dict(state="error", error="elevation", done=0, total=known.size, message=device.LINUX_REFUSED)
+                device._put(status, json.dumps(info), must=False)
             break
         if show and "done" in info:
             show(info)
