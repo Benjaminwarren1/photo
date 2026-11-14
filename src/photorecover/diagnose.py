@@ -6,7 +6,6 @@ to know which, and whether trying another tool or paying a lab could help. Each 
 answers from what is on the card and stays quiet unless the evidence is strong."""
 from __future__ import annotations
 
-import struct
 
 import numpy as np
 

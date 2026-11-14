@@ -11,12 +11,13 @@ import io
 import os
 import struct
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image
 
 from . import _scan_py
+from .util import ceil_div
 
 try:  # the C decoder is roughly a thousand times faster
     from . import _scan as _impl
@@ -192,8 +193,8 @@ def parse_header(buf: bytes) -> JpegInfo:
             if len(comps) == 1:      # a single-component scan is never interleaved
                 info.comps = [(comps[0][0], 1, 1, comps[0][3])]
                 info.hmax = info.vmax = 1
-            info.mcus_x = -(-w // (8 * info.hmax))
-            info.mcus_y = -(-h // (8 * info.vmax))
+            info.mcus_x = ceil_div(w, 8 * info.hmax)
+            info.mcus_y = ceil_div(h, 8 * info.vmax)
             if unsupported:
                 info.supported, info.why_unsupported = False, unsupported
                 return info
@@ -386,25 +387,3 @@ class Stream:
         s._memo = None
         return s
 
-
-def dc_planes(info: JpegInfo, dc: np.ndarray, mcus: int | None = None) -> np.ndarray:
-    """Turn per-MCU DC values into a YCbCr picture at 1/8 scale of the luma grid.
-    MCUs not decoded yet are mid grey."""
-    n = info.total_mcus if mcus is None else mcus
-    X, Y = info.mcus_x, info.mcus_y
-    planes = []
-    col = 0
-    for ci, _, _ in info.scan:
-        _, h, v, _ = info.comps[ci]
-        q = info.qdc[ci]
-        blk = dc[:, col:col + h * v].astype(np.float32) * (q / 8.0) + 128.0
-        blk[n:] = 128.0
-        col += h * v
-        p = blk.reshape(Y, X, v, h).transpose(0, 2, 1, 3).reshape(Y * v, X * h)
-        if h != info.hmax or v != info.vmax:
-            p = np.repeat(np.repeat(p, info.vmax // v, axis=0), info.hmax // h, axis=1)
-        planes.append(p)
-    if len(planes) == 1:
-        g = np.full_like(planes[0], 128.0)
-        planes += [g, g]
-    return np.clip(np.stack(planes, axis=-1), 0, 255)

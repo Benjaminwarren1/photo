@@ -21,14 +21,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from . import __version__, jpeg
-from . import formats
-from . import streams
-
-warnings.filterwarnings("ignore", message="Image appears to be a malformed MPO")
+from . import __version__, formats, jpeg, streams
 from .fat import Entry, NotFat, open_volume
 from .rebuild import Judge, Rebuilder, Result
-from .video import CONTAINERS, VideoRebuilder
+from .util import ceil_div, count_pieces, file_ext, in_one_run, safe_name, set_mtime, unique_name
+from .video import CONTAINERS, TOP_BOXES, VideoRebuilder
+
+warnings.filterwarnings("ignore", message="Image appears to be a malformed MPO")
 
 JPEG_EXT = {"jpg", "jpeg", "jpe"}
 SIGNATURES = {            # extension -> bytes a file of that type starts with (offset, magic)
@@ -42,8 +41,9 @@ SIGNATURES = {            # extension -> bytes a file of that type starts with (
     "mpo": (0, b"\xff\xd8\xff"),       # a 3D photo: two JPEGs in one file
     **{ext: (0, None) for ext in streams.TS_EXT},        # dashcam and camcorder video: see streams.py
 }
-BOX_TYPES = {b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide", b"uuid", b"meta", b"udta", b"pnot", b"moof",
-             b"mfra", b"sidx", b"styp", b"PICT", b"pict", b"thum", b"junk"}
+# The top-level parts an MP4, MOV, 3GP or HEIC file can be made of. Whole-file checks also accept
+# the picture and thumbnail parts some cameras add; the video rebuilder does not need them.
+BOX_TYPES = TOP_BOXES | {b"PICT", b"pict", b"thum"}
 
 FOLDER_OK = "Recovered"
 FOLDER_PARTIAL = "Recovered - Partial"
@@ -143,18 +143,6 @@ def _valid_isobmff(data) -> bool:
         pos += size
         seen += 1
     return pos == n and seen >= 2
-
-
-def _valid_png(data) -> bool:
-    if data[:8] != b"\x89PNG\r\n\x1a\n":
-        return False
-    pos, n = 8, len(data)
-    while pos + 12 <= n:
-        ln, typ = struct.unpack_from(">I4s", data, pos)
-        pos += 12 + ln
-        if typ == b"IEND":
-            return pos == n
-    return False
 
 
 def _gif_lines_up(data) -> bool:
@@ -414,7 +402,6 @@ class Recovery:
         self.blank_ranges: list[tuple[int, int]] = []
         if isinstance(image, (str, Path)):
             try:
-                import json
                 listed = json.loads(Path(str(image) + ".bad.json").read_text())
                 self.blank_ranges = sorted((int(a), int(a) + int(n)) for a, n in listed["unreadable"])
             except (OSError, ValueError, KeyError, TypeError):
@@ -437,28 +424,16 @@ class Recovery:
         if vol.fat_bits != 32:
             return e.start
 
-        def fits(c: int) -> bool:
-            if not vol.valid(c):
-                return False
-            head = vol.cluster(c)[:16]
-            if ext in JPEG_EXT:
-                return head[:3] == b"\xff\xd8\xff"
-            sig = SIGNATURES.get(ext)
-            if sig and sig[1]:
-                return head[sig[0]:sig[0] + len(sig[1])] == sig[1]
-            return False
-
-        if fits(e.start):
+        if self._begins_like(e.start, ext):
             return e.start
         lo = e.start & 0xFFFF
-        hits = [c for hi in range((vol.max_cluster >> 16) + 1) if fits(c := lo | (hi << 16))]
+        hits = [c for hi in range((vol.max_cluster >> 16) + 1) if self._begins_like(c := lo | (hi << 16), ext)]
         return hits[0] if len(hits) == 1 else e.start
 
-    def _starts_right(self, e: Entry) -> bool:
-        """Does the cluster this entry points to, in the card's current layout, begin the way
-        a file of its type begins?"""
-        ext, vol = e.ext, self.vol
-        c = self._resolve_start(e, ext)
+    def _begins_like(self, c: int, ext: str) -> bool:
+        """Does cluster c begin the way a file with this ending begins? False for kinds that have
+        no fixed first bytes."""
+        vol = self.vol
         if not vol.valid(c):
             return False
         head = vol.cluster(c)[:16]
@@ -466,6 +441,11 @@ class Recovery:
             return head[:3] == b"\xff\xd8\xff"
         sig = SIGNATURES.get(ext)
         return bool(sig and sig[1] and head[sig[0]:sig[0] + len(sig[1])] == sig[1])
+
+    def _starts_right(self, e: Entry) -> bool:
+        """Does the cluster this entry points to, in the card's current layout, begin the way
+        a file of its type begins?"""
+        return self._begins_like(self._resolve_start(e, e.ext), e.ext)
 
     def _photo_starts(self, avail: np.ndarray) -> list[int]:
         """Unclaimed clusters that begin the way a JPEG begins. The same read of the card also
@@ -560,7 +540,7 @@ class Recovery:
         kinds = {"photos": 0, "videos": 0, "other": 0}       # what the files that cannot be checked are
         for it in self.items:
             if it.grade == GRADE_UNVERIFIED:
-                ext = it.name.rpartition(".")[2].lower() if "." in it.name else ""
+                ext = file_ext(it.name)
                 kinds["photos" if ext in PHOTO_EXT else "videos" if ext in VIDEO_EXT else "other"] += 1
         self.summary["unverified_kinds"] = kinds
         self.summary["findings"] = self._findings() if self._only is None and not self._part else []
@@ -692,7 +672,7 @@ class Recovery:
             if r is not None and r.status == "complete" and not self._still_free(r):
                 proved, r = whole(it)       # an earlier photo has just taken some of this space: look again
             if proved:
-                pieces = 1 + sum(1 for a, b in zip(hint, hint[1:]) if b != a + 1)
+                pieces = count_pieces(hint)
                 self._accept(it, r, "found whole" if pieces == 1 else
                              f"rebuilt from {pieces} pieces using the card's own record")
                 self._claim(r.chain)
@@ -715,7 +695,7 @@ class Recovery:
     def _videos(self, others) -> set[int]:
         """Videos: every frame and audio packet listed in the video's index is a checkpoint.
         Returns the ids of the items this pass has ruled on."""
-        videos = [i for i in others if i.name.rpartition(".")[2].lower() in CONTAINERS]
+        videos = [i for i in others if file_ext(i.name) in CONTAINERS]
         rejected: set[int] = set()         # videos the frame check has ruled on: no second chance as "other"
         if videos:
             self.log(f"Checking {len(videos)} videos")
@@ -738,7 +718,7 @@ class Recovery:
             it.chain = v.chain
             it.percent = round(100.0 * (len(v.chain) - v.missing) / max(1, len(v.chain)), 1)
             real = [c for c in v.chain if c >= 0]
-            pieces = 1 + sum(1 for a, b in zip(real, real[1:]) if b != a + 1)
+            pieces = count_pieces(real)
             it.method = "found whole" if pieces == 1 and not v.missing else f"rebuilt from {pieces} pieces"
             if v.status == "complete":
                 it.grade = GRADE_VERIFIED
@@ -756,7 +736,7 @@ class Recovery:
         """Other file types that are whole."""
         vol, cl = self.vol, self.vol.cl
         for it in others:
-            n = -(-it.size // cl)
+            n = ceil_div(it.size, cl)
             if not vol.valid(it.start) or it.start + n - 1 > vol.max_cluster:
                 it.note = ("the card no longer records where this file was stored" if it.start == 0
                            else "start cluster is outside the card")
@@ -765,7 +745,7 @@ class Recovery:
             if not self._avail[chain].all():
                 it.note = "its space was reused by another file"
                 continue
-            ext = it.name.rpartition(".")[2].lower() if "." in it.name else ""
+            ext = file_ext(it.name)
             if ext not in SIGNATURES and bytes(vol.cluster(chain[0])[:8]) == b"\x89PNG\r\n\x1a\n":
                 # a picture saved without its ending (some apps do): check it as what it is, and
                 # give it the ending so that it opens with a double click
@@ -827,7 +807,7 @@ class Recovery:
                 if r is None:
                     continue
                 if r.status == "complete" and r.exact_end:
-                    pieces = 1 + sum(1 for a, b in zip(r.chain, r.chain[1:]) if b != a + 1)
+                    pieces = count_pieces(r.chain)
                     self._accept(it, r, "found whole" if pieces == 1 else f"rebuilt from {pieces} pieces")
                     self._claim(r.chain)
                 elif r.status == "complete":
@@ -871,7 +851,7 @@ class Recovery:
         def take(c: int, r) -> None:
             it = Item(name="", folder="Found by scanning", size=r.size, start=c,
                       kind="jpeg", source="found by scanning")
-            pieces = 1 + sum(1 for a, b in zip(r.chain, r.chain[1:]) if b != a + 1)
+            pieces = count_pieces(r.chain)
             self._accept(it, r, "found whole" if pieces == 1 else f"rebuilt from {pieces} pieces")
             self._claim(r.chain)
             found.append(it)
@@ -949,7 +929,7 @@ class Recovery:
         numbers[kind] += 1
         it = Item(name=f"found_{kind}_{numbers[kind]:05d}.{ext}", folder="Found by scanning", size=size, start=c,
                   kind="other", source="found by scanning", grade=grade, percent=percent,
-                  method="found whole" if all(b == a + 1 for a, b in zip(chain, chain[1:])) else "rebuilt from pieces",
+                  method="found whole" if in_one_run(chain) else "rebuilt from pieces",
                   note=note, chain=chain)
         self._claim([x for x in chain if x >= 0])
         self._items.append(it)
@@ -961,7 +941,7 @@ class Recovery:
         pos = vol.data_off + (c - 2) * cl
         if kind == "png":
             size = png_length(vol.m, pos, data_end)
-            chain = list(range(c, c + -(-size // cl))) if size else []
+            chain = list(range(c, c + ceil_div(size, cl))) if size else []
             if size and self._avail[chain].all():
                 self._found_other(c, "png", "png", size, chain, GRADE_VERIFIED, "every part of it passes its own checksum")
             return
@@ -970,7 +950,7 @@ class Recovery:
             if got is None:
                 return
             size, ext = got
-            chain = list(range(c, c + -(-size // cl)))
+            chain = list(range(c, c + ceil_div(size, cl)))
             if not self._avail[chain].all():
                 return
             checked = formats.check_tiff(vol.read_chain(chain, size), size, audit_jpeg)
@@ -990,7 +970,7 @@ class Recovery:
             # in one run, up to the first blank or foreign cluster, and say what it is.
             want = unfinished_video(vol.m, pos, data_end)
             if want is not None:
-                limit = c + (-(-want // cl) if want else (64 << 30) // cl)
+                limit = c + (ceil_div(want, cl) if want else (64 << 30) // cl)
                 k = c + 1
                 while k <= vol.max_cluster and k < limit and self._avail[k] and not self._blank[k] and \
                         bytes(vol.cluster(k)[:3]) != b"\xff\xd8\xff" and bytes(vol.cluster(k)[4:8]) != b"ftyp":
@@ -1015,7 +995,7 @@ class Recovery:
                                     percent=round(100.0 * have / want, 1) if have < want else 100.0)
             return
         size, seen, brand = got
-        chain = list(range(c, c + -(-size // cl)))
+        chain = list(range(c, c + ceil_div(size, cl)))
         if not self._avail[chain].all():
             return
         if brand == b"crx ":                      # Canon's newer RAW: built like a video file
@@ -1050,7 +1030,7 @@ class Recovery:
             return
         size = streams.avi_length(vol.m, pos, data_end)
         if size:
-            chain = list(range(c, c + -(-size // cl)))
+            chain = list(range(c, c + ceil_div(size, cl)))
             if not self._avail[chain].all():
                 return
             checked = streams.check_avi(vol.read_chain(chain, size))
@@ -1063,7 +1043,7 @@ class Recovery:
         limit = pos + self._free_run(c, (16 << 30) // cl) * cl
         have = streams.unfinished_avi(vol.m, pos, min(limit, data_end))
         if have and have >= 256 << 10:
-            self._found_other(c, "video", "avi", have, list(range(c, c + -(-have // cl))), GRADE_PARTIAL,
+            self._found_other(c, "video", "avi", have, list(range(c, c + ceil_div(have, cl))), GRADE_PARTIAL,
                               "a recording that was cut off, or whose end is no longer on the card: its frames are "
                               "here but its index is not, so some players will refuse it. VLC will usually play it, "
                               "and a video repair tool can rebuild the index")
@@ -1081,7 +1061,7 @@ class Recovery:
                 return
             jump = streams.ts_jump(vol.m, pos + lead, run, step, off)
             size = lead + (run if jump is None else jump * step)
-            n = -(-size // cl)
+            n = ceil_div(size, cl)
             if size >= 1 << 20:      # anything shorter is not worth keeping, or is a chance likeness
                 ext = "ts" if step == 188 else "mts"
                 if not lead and streams.ts_begins(vol.m, pos, step, off):
@@ -1228,13 +1208,8 @@ class Recovery:
                 if not chain or len(chain) * vol.cl < e.size:
                     it.note = "the card's record of where this file is stored is damaged"
                     continue
-                rel = "/".join([FOLDER_LIVE] + [_safe(p) for p in e.path.split("/") if p] + [_safe(e.name)])
-                k2, base = 1, rel
-                while rel.lower() in taken:
-                    k2 += 1
-                    stem, dot, ext = base.rpartition(".")
-                    rel = f"{stem} ({k2}){dot}{ext}" if dot else f"{base} ({k2})"
-                taken.add(rel.lower())
+                rel = unique_name("/".join([FOLDER_LIVE] + [safe_name(p) for p in e.path.split("/") if p]
+                                           + [safe_name(e.name)]), taken)
                 dest = self.out / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 left = e.size
@@ -1245,13 +1220,7 @@ class Recovery:
                         block = vol.cluster(c)[:left]
                         f.write(block)
                         left -= len(block)
-                if e.mtime:
-                    try:
-                        y, mo, d, h, mi = e.mtime
-                        ts = time.mktime((y, mo, d, h, mi, 0, 0, 0, -1))
-                        os.utime(dest, (ts, ts))
-                    except (ValueError, OverflowError, OSError):
-                        pass
+                set_mtime(dest, e.mtime)
                 it.grade, it.percent, it.saved_as, it.out_bytes = GRADE_LIVE, 100.0, rel, e.size
                 it.method = "copied as it is"
             except Exception as ex:  # noqa: BLE001
@@ -1290,9 +1259,9 @@ class Recovery:
         old = ImageFile.LOAD_TRUNCATED_IMAGES
         ImageFile.LOAD_TRUNCATED_IMAGES = True
         try:
-            for score, c in it.candidates[:6]:
+            for _score, c in it.candidates[:6]:
                 chain, used, cc = list(r.chain) + [c], set(r.chain) | {c}, c
-                for _ in range(max(3, -(-(it.size or 0) // vol.cl) // 4)):   # let it run on for a quarter of the photo
+                for _ in range(max(3, ceil_div(it.size or 0, vol.cl) // 4)):   # let it run on for a quarter of the photo
                     cc = self._rb._next_avail(cc, used)
                     if cc is None:
                         break
@@ -1339,7 +1308,7 @@ class Recovery:
                     self._taken.discard(rel.lower())
             it.saved_as = it.filled_as = ""
             if r2.status == "complete" and r2.exact_end:
-                pieces = 1 + sum(1 for a, b in zip(r2.chain, r2.chain[1:]) if b != a + 1)
+                pieces = count_pieces(r2.chain)
                 self._accept(it, r2, f"rebuilt from {pieces} pieces, {len(it._forced)} chosen by eye")
                 it.note, it.candidates, it.saved_as = "", [], ""
                 self._avail[np.asarray(r2.chain, np.int64)] = False
@@ -1365,7 +1334,7 @@ class Recovery:
         taken only if whole: the marker structure must end exactly at the recorded size,
         the picture must open, and it must match its preview band by band."""
         vol = self.vol
-        n = -(-it.size // vol.cl)
+        n = ceil_div(it.size, vol.cl)
         if it.start + n - 1 > vol.max_cluster:
             it.note = "start cluster is outside the card"
             return
@@ -1401,7 +1370,7 @@ class Recovery:
                 """Does this photo's own ending sit exactly where its recorded size says, counting
                 straight on from its start? (The ending is the end marker, or the block of notes some
                 phone cameras add after it, which states its own length.)"""
-                n = -(-it.size // vol.cl)
+                n = ceil_div(it.size, vol.cl)
                 if it.kind != "jpeg" or not it.chain or it.size < 16 or it.start + n - 1 > vol.max_cluster:
                     return False
                 last = bytes(vol.read_run(it.start, it.size)[-12:])
@@ -1419,7 +1388,7 @@ class Recovery:
                 hit.update(range(c0, c1 + 1))
             for it in self.items:
                 if it.grade in (GRADE_PARTIAL, GRADE_REVIEW, GRADE_LOST) and it.size and hit.isdisjoint(it.chain) \
-                        and not hit.isdisjoint(range(it.start, it.start + -(-it.size // vol.cl))):
+                        and not hit.isdisjoint(range(it.start, it.start + ceil_div(it.size, vol.cl))):
                     if it.grade == GRADE_REVIEW:
                         # nothing for a person to choose between: the next piece is simply unreadable
                         it.grade, it.candidates, it.note = GRADE_PARTIAL, [], ""
@@ -1439,7 +1408,7 @@ class Recovery:
                     if it.grade in (GRADE_VERIFIED, GRADE_NO_PREVIEW, GRADE_UNVERIFIED):
                         it.grade = GRADE_PARTIAL        # bytes known to be missing: never "recovered"
                     if it.kind == "jpeg" and it.percent < 100.0 and it.size and \
-                            not hit.isdisjoint(range(it.start, it.start + -(-it.size // vol.cl))):
+                            not hit.isdisjoint(range(it.start, it.start + ceil_div(it.size, vol.cl))):
                         it._whole = runs_through(it)
         if todo:
             self.log(f"Checking every recovered file once more and saving {len(todo)} files")
@@ -1483,71 +1452,59 @@ class Recovery:
         return ok, note
 
     def _deliver_item(self, it: Item, verdict="ask") -> None:
+        """Run the final check on one file (unless verdict already holds its result) and save it."""
         vol, taken = self.vol, self._taken
-        if True:
-            if not it.chain:
-                return
-            data = self._data(it)
-            if verdict == "ask":
-                verdict = self._audit(it)
-            if verdict is not None:
-                ok, note = verdict
-                if not ok:
-                    whole = all(b == a + 1 for a, b in zip(it.chain, it.chain[1:]))
-                    if whole and "preview" in note:
-                        it.note = (it.note + "; " if it.note else "") + "the picture " + note + \
-                            " (its preview may be out of date)"
-                        it.grade = GRADE_NO_PREVIEW      # complete and in one piece, but the preview did not vouch for it
-                    else:
-                        it.grade, it.note = GRADE_REVIEW, "failed the final check: " + note
-            it.out_bytes = len(data)
-            if not self.out:
-                return
-            folder = FOLDER_OK if it.grade in (GRADE_VERIFIED, GRADE_NO_PREVIEW, GRADE_UNVERIFIED) else FOLDER_PARTIAL
-            # Sorted by what the file is, so that the photos are one click away. The folders the
-            # card had are not rebuilt (the report says where each file was): this rescues files,
-            # it does not put a card back the way it was.
-            sub = kind_folder(it.name, data)
-            name = _safe(it.name)
-            if folder == FOLDER_PARTIAL and it.percent < 100.0:
-                stem, dot, ext = name.rpartition(".")
-                name = f"{stem} ({it.percent:.0f}%){dot}{ext}" if dot else f"{name} ({it.percent:.0f}%)"
-            rel = "/".join(x for x in (folder, sub, name) if x)
-            k = 1
-            while rel.lower() in taken:
-                stem, dot, ext = name.rpartition(".")
-                k += 1
-                rel = "/".join(x for x in (folder, sub, f"{stem} ({k}){dot}{ext}" if dot else f"{name} ({k})") if x)
-            taken.add(rel.lower())
-            dest = self.out / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            _write(dest, data)
-            if it.mtime:
-                try:
-                    y, mo, d, h, mi = it.mtime
-                    ts = time.mktime((y, mo, d, h, mi, 0, 0, 0, -1))
-                    os.utime(dest, (ts, ts))
-                except (ValueError, OverflowError, OSError):
-                    pass
-            it.saved_as = rel
-            if getattr(it, "_whole", False):
-                stem, dot, ext = rel.rpartition(".")
-                wrel = stem.rsplit(" (", 1)[0] + f" (whole file, damaged from {it.percent:.0f}%).jpg"
-                _write(self.out / wrel, bytes(vol.read_run(it.start, it.size)))
-                taken.add(wrel.lower())
-                it.note += (f"; the whole file is saved too, as {wrel.rpartition('/')[2]}: below the unreadable "
-                            "part it may look shifted or discoloured")
-            if it.kind == "jpeg" and it.percent < 100.0:
-                filled = preview_fill(data, it.percent)
-                if filled:
-                    frel = "/".join([FOLDER_FILLED] + rel.split("/")[1:])
-                    stem, dot, ext = frel.rpartition(".")
-                    frel = stem.rsplit(" (", 1)[0] + f" ({it.percent:.0f}% real, rest from preview).jpg"
-                    fdest = self.out / frel
-                    fdest.parent.mkdir(parents=True, exist_ok=True)
-                    _write(fdest, filled)
-                    taken.add(frel.lower())
-                    it.filled_as = frel
+        if not it.chain:
+            return
+        data = self._data(it)
+        if verdict == "ask":
+            verdict = self._audit(it)
+        if verdict is not None:
+            ok, note = verdict
+            if not ok:
+                whole = in_one_run(it.chain)
+                if whole and "preview" in note:
+                    it.note = (it.note + "; " if it.note else "") + "the picture " + note + \
+                        " (its preview may be out of date)"
+                    it.grade = GRADE_NO_PREVIEW      # complete and in one piece, but the preview did not vouch for it
+                else:
+                    it.grade, it.note = GRADE_REVIEW, "failed the final check: " + note
+        it.out_bytes = len(data)
+        if not self.out:
+            return
+        folder = FOLDER_OK if it.grade in (GRADE_VERIFIED, GRADE_NO_PREVIEW, GRADE_UNVERIFIED) else FOLDER_PARTIAL
+        # Sorted by what the file is, so that the photos are one click away. The folders the
+        # card had are not rebuilt (the report says where each file was): this rescues files,
+        # it does not put a card back the way it was.
+        sub = kind_folder(it.name, data)
+        name = safe_name(it.name)
+        if folder == FOLDER_PARTIAL and it.percent < 100.0:
+            stem, dot, ext = name.rpartition(".")
+            name = f"{stem} ({it.percent:.0f}%){dot}{ext}" if dot else f"{name} ({it.percent:.0f}%)"
+        rel = unique_name("/".join(x for x in (folder, sub, name) if x), taken)
+        dest = self.out / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _write(dest, data)
+        set_mtime(dest, it.mtime)
+        it.saved_as = rel
+        if getattr(it, "_whole", False):
+            stem, dot, ext = rel.rpartition(".")
+            wrel = stem.rsplit(" (", 1)[0] + f" (whole file, damaged from {it.percent:.0f}%).jpg"
+            _write(self.out / wrel, bytes(vol.read_run(it.start, it.size)))
+            taken.add(wrel.lower())
+            it.note += (f"; the whole file is saved too, as {wrel.rpartition('/')[2]}: below the unreadable "
+                        "part it may look shifted or discoloured")
+        if it.kind == "jpeg" and it.percent < 100.0:
+            filled = preview_fill(data, it.percent)
+            if filled:
+                frel = "/".join([FOLDER_FILLED] + rel.split("/")[1:])
+                stem, dot, ext = frel.rpartition(".")
+                frel = stem.rsplit(" (", 1)[0] + f" ({it.percent:.0f}% real, rest from preview).jpg"
+                fdest = self.out / frel
+                fdest.parent.mkdir(parents=True, exist_ok=True)
+                _write(fdest, filled)
+                taken.add(frel.lower())
+                it.filled_as = frel
 
     def _write_report(self) -> None:
         from .report import write_html
@@ -1563,7 +1520,7 @@ class Recovery:
 
 def kind_folder(name: str, data: bytes = b"") -> str:
     """The folder a recovered file is sorted into, by what kind of file it is."""
-    ext = name.rpartition(".")[2].lower() if "." in name else ""
+    ext = file_ext(name)
     if ext in JPEG_EXT or ext in ("png", "gif", "bmp"):
         # thumbnails, icons and pictures apps keep for themselves would bury the real photos
         try:
@@ -1600,8 +1557,3 @@ def _runs(chain: list[int]) -> list[list[int]]:
             out.append([c, 1])
     return out
 
-
-def _safe(name: str) -> str:
-    bad = '<>:"/\\|?*'
-    out = "".join("_" if (ch in bad or ord(ch) < 32) else ch for ch in name).strip(" .")
-    return out or "_"

@@ -23,6 +23,7 @@ from PIL import Image
 
 from . import jpeg
 from .jpeg import ST_DONE, ST_ERROR, ST_NEED_DATA
+from .util import ceil_div, next_free
 
 CLEAR_WIN = 1.6          # a winner must beat the runner-up by this factor
 CLEAR_WIN_NO_PREVIEW = 2.0   # stricter when only the join itself can be judged
@@ -61,7 +62,7 @@ class Judge:
 
     def _layout(self, thumb: np.ndarray) -> np.ndarray:
         info = self.info
-        w8, h8 = -(-info.width // 8), -(-info.height // 8)
+        w8, h8 = ceil_div(info.width, 8), ceil_div(info.height, 8)
         im = Image.fromarray(np.clip(thumb, 0, 255).astype(np.uint8), "YCbCr").resize((w8, h8), Image.BILINEAR)
         a = np.asarray(im, np.float32)
         Hd, Wd = info.mcus_y * info.vmax, info.mcus_x * info.hmax
@@ -179,7 +180,6 @@ class Result:
     picks: list[dict] = field(default_factory=list)       # non-contiguous decisions made
     candidates: list[tuple[float, int]] = field(default_factory=list)
     info: jpeg.JpegInfo | None = None
-    trailer_clusters: int = 0
     exact_end: bool = True        # the end marker sits exactly where the recorded size says
     image_bytes: int = 0          # length up to and including the end marker
     scores: list[float] = field(default_factory=list)
@@ -207,13 +207,8 @@ class Rebuilder:
         self.always_ask = False      # leave every join that is not simply "the next free cluster" to a person
 
     def _next_avail(self, c: int, used: set[int]) -> int | None:
-        c += 1
-        top = self.vol.max_cluster
-        while c <= top:
-            if self.avail[c] and c not in used:
-                return c
-            c += 1
-        return None
+        """The next cluster after c that may still hold part of an unrecovered file."""
+        return next_free(self.avail, c, used, self.vol.max_cluster)
 
     def prove_chain(self, chain: list[int], size: int) -> Result | None:
         """Check a chain suggested by the file system (exFAT keeps a deleted file's
@@ -268,7 +263,7 @@ class Rebuilder:
         if not info.supported:
             res.status, res.reason = "unsupported", info.why_unsupported
             return res
-        n_total = None if size is None else max(1, -(-size // cl))
+        n_total = None if size is None else max(1, ceil_div(size, cl))
         judge = Judge(info, jpeg.decode_thumb(info))
         has_preview = res.has_preview = judge.target is not None
         end_off = None if size is None else (size - 2) % cl
@@ -525,7 +520,6 @@ class Rebuilder:
                         break
                     chain.append(nx)
                     w.used.add(nx)
-                    res.trailer_clusters += 1
                 res.status = "complete" if len(chain) == n_total else "partial"
                 res.exact_end = False
                 res.reason = "extra data after the picture was copied without checking"
