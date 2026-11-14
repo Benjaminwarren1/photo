@@ -17,6 +17,10 @@ from pathlib import Path
 
 CHUNK = 1 << 20
 SECTOR = 512
+IS_LINUX = sys.platform.startswith("linux")
+
+if IS_LINUX:
+    from . import linux
 
 
 @dataclass
@@ -73,23 +77,8 @@ def list_drives() -> list[Drive]:
             if info.get("TotalSize"):
                 out.append(Drive(name, f"/dev/r{name}", int(info["TotalSize"]), str(info.get("MediaName", "")),
                                  bool(info.get("RemovableMediaOrExternalDevice")), bool(info.get("Internal"))))
-    else:
-        mounts = Path("/proc/mounts").read_text() if Path("/proc/mounts").exists() else ""
-        for blk in sorted(Path("/sys/block").glob("*")):
-            n = blk.name
-            if n.startswith(("loop", "ram", "zram", "dm-", "sr")):
-                continue
-            try:
-                size = int((blk / "size").read_text()) * SECTOR
-                removable = (blk / "removable").read_text().strip() == "1"
-            except (OSError, ValueError):
-                continue
-            if not size:
-                continue
-            model = (blk / "device/model").read_text().strip() if (blk / "device/model").exists() else ""
-            system = any(line.split()[0].startswith(f"/dev/{n}") and line.split()[1] in ("/", "/boot", "/boot/efi")
-                         for line in mounts.splitlines() if line.strip())
-            out.append(Drive(n, f"/dev/{n}", size, model, removable or n.startswith("mmcblk"), system))
+    elif IS_LINUX:
+        out = linux.list_drives(Drive)
     return out
 
 
@@ -141,6 +130,8 @@ def free_space(folder: Path) -> int:
 
 def filesystem_of(folder: Path) -> str:
     """The format of the drive a folder is on ("FAT32", "exFAT", "NTFS"...), or "" when unknown."""
+    if IS_LINUX:
+        return linux.filesystem_of(folder)
     if sys.platform != "win32":
         return ""
     try:
@@ -245,7 +236,22 @@ def _open_source(source: str):
     plan = os.environ.get("PHOTOLIFEBOAT_FAULTS")       # tests: a JSON file describing a failing card
     if plan:
         return _Faulty(source, json.loads(Path(plan).read_text()))
-    return open(source, "rb", buffering=0)
+    try:
+        return open(source, "rb", buffering=0)
+    except PermissionError:
+        if not (IS_LINUX and str(source).startswith("/dev/")):
+            raise
+    # Linux: ordinary users may not read a drive directly; ask UDisks for a read-only handle instead.
+    return os.fdopen(linux.open_with_udisks(str(source)), "rb", buffering=0)
+
+
+def can_open(source: str) -> bool:
+    """Can this program read the card as it is, without running as administrator or root?"""
+    try:
+        _open_source(source).close()
+        return True
+    except OSError:
+        return False
 
 
 GIVE_UP_AFTER = 48          # this many chunks in a row unreadable: the card has probably dropped off
@@ -488,7 +494,8 @@ def clone(source: str, dest: Path, size: int | None = None, status_file: Path | 
             return note("error", error="io", resumable=True,
                         message=f"The copy was interrupted ({e}). What has been copied so far is kept: "
                                 "start the copy again and it carries on from where it stopped.")
-        return note("error", error="permission", message="Reading the card needs administrator rights.")
+        return note("error", error="permission",
+                    message=LINUX_NO_ACCESS if IS_LINUX else "Reading the card needs administrator rights.")
     except OSError as e:
         if not done and created:
             Path(dest).unlink(missing_ok=True)
@@ -560,13 +567,21 @@ def known_folder(which: str) -> Path:
                     return path
         except Exception:  # noqa: BLE001 - fall back to the usual place
             pass
+    if IS_LINUX:
+        found = linux.user_folder(which)
+        if found:
+            return found
     path = home / {"pictures": "Pictures", "desktop": "Desktop"}[which]
     return path if path.is_dir() else home
 
 
-def start_clone(drive: Drive, dest: Path, status_file: Path) -> None:
+def start_clone(drive: Drive, dest: Path, status_file: Path, elevate: bool = False):
     """Start the clone as a separate process. On Windows, raw drive reads need
-    administrator rights, so only this helper asks for them (one UAC prompt)."""
+    administrator rights, so only this helper asks for them (one UAC prompt).
+
+    On Linux the helper normally runs as the person (see linux.py for how it reads the card); with
+    elevate it is run as root through pkexec instead. Returns the process when it is one this program
+    can watch (so a refused password window can be noticed), else None."""
     cmd = self_command() + ["clone", drive.path, str(dest), "--size", str(drive.size), "--status", str(status_file)]
     Path(status_file).write_text(json.dumps(dict(state="starting", done=0, total=drive.size)))
     if sys.platform == "win32" and not is_admin() and not os.environ.get("PHOTOLIFEBOAT_FAKE_DRIVES"):
@@ -577,9 +592,24 @@ def start_clone(drive: Drive, dest: Path, status_file: Path) -> None:
             Path(status_file).write_text(json.dumps(dict(
                 state="error", error="elevation", done=0, total=drive.size,
                 message="Windows did not allow the card to be read. Click Yes on the permission prompt to continue.")))
-        return
+        return None
+    if IS_LINUX and elevate:
+        root_cmd = linux.elevated_command(cmd)
+        if root_cmd is None:
+            Path(status_file).write_text(json.dumps(dict(
+                state="error", error="permission", done=0, total=drive.size, message=LINUX_NO_ACCESS)))
+            return None
+        return subprocess.Popen(root_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL, env=linux.outside_env())
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+
+
+LINUX_NO_ACCESS = ("This computer did not allow the card to be read. If a window asked for your password, "
+                   "start again and type it there. If no window appeared, run Photo Lifeboat from a terminal "
+                   "with: sudo photolifeboat")
+LINUX_REFUSED = ("This computer did not allow the card to be read: the password window was closed or the "
+                 "password was not accepted. Start the copy again and type your password when asked.")
 
 
 def drive_dict(d: Drive) -> dict:

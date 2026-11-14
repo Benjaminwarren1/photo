@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Photo Lifeboat
+GenericName=Photo recovery
+Comment=Get deleted photos back from a memory card
+Exec=PhotoLifeboat
+Icon=photolifeboat
+Terminal=false
+Categories=Utility;Graphics;
+Keywords=photo;recovery;undelete;SD card;memory card;

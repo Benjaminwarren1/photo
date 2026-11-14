@@ -15,7 +15,7 @@ documents, music and voice recordings, and sorts them into folders for you.
 - **Made almost entirely by AI.** [More about that below](#made-almost-entirely-by-ai).
 - **Yours to use, share and change.** [What that means](#free-to-use-share-and-change).
 
-**[Download Photo Lifeboat for Windows](../../releases/latest)** (Windows 10 and 11)
+**[Download Photo Lifeboat](../../releases/latest)** for Windows 10 and 11, or [for Linux](#how-to-use-it-linux)
 
 > **Early version.** It has rescued thousands of photos in testing, but it has not yet been tried on many
 > different cards and cameras. Whether it worked or not, please [tell us how it went](../../issues/new/choose).
@@ -71,7 +71,20 @@ rescued photos are not touched.
 Rather not install anything? The release also has a **portable** zip: extract it and double-click
 **PhotoLifeboat**.
 
-Mac and Linux versions are planned but not ready yet.
+A Mac version is planned but not ready yet.
+
+## How to use it (Linux)
+
+1. Download **PhotoLifeboat-…-x86_64.AppImage** from the [latest release](../../releases/latest). It is one
+   file with everything inside; nothing needs installing.
+2. Allow it to run: right-click the file, choose **Properties**, and tick **Allow executing file as program**
+   (or **Is executable**). Then double-click it.
+3. Follow the steps on screen, the same as on Windows. When you plug the card in, the computer may open it in
+   a file window: just close that. If the computer asks for your password, type it: Photo Lifeboat needs it
+   to read the card, and only ever reads it.
+
+It works on most desktop Linux from the last few years (Ubuntu 22.04 or newer, Linux Mint 21 or newer,
+Debian 12, Fedora, and others like them) on ordinary 64-bit Intel or AMD computers.
 
 ## What you get back
 

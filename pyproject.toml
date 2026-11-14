@@ -9,7 +9,8 @@ description = "Free tool that rescues deleted photos from memory cards, rebuildi
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24", "Pillow>=10"]
+# jeepney: Linux only, to ask UDisks for read access to a card without root (pure Python, small).
+dependencies = ["numpy>=1.24", "Pillow>=10", "jeepney>=0.7; sys_platform == 'linux'"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]

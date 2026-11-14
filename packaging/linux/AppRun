@@ -1,0 +1,11 @@
+#!/bin/sh
+# Starts Photo Lifeboat from inside the AppImage.
+#   Photo Lifeboat.AppImage              the window (what a double-click does)
+#   Photo Lifeboat.AppImage <command>    the command line, e.g. "drives" or "recover card.img"
+# The program also starts itself this way, through pkexec, when it needs root to read a card.
+HERE="$(dirname "$(readlink -f "$0")")"
+APP="$HERE/usr/lib/photolifeboat"
+if [ "$#" -gt 0 ]; then
+    exec "$APP/photolifeboat-cli" "$@"
+fi
+exec "$APP/PhotoLifeboat"

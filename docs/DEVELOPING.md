@@ -31,6 +31,26 @@ the uninstaller, and publishes them (see [RELEASING.md](RELEASING.md)).
 Without pywebview (`pip install ".[window]"` adds it), or without WebView2, the wizard opens in the browser
 instead. `PHOTOLIFEBOAT_BROWSER=1` forces the browser.
 
+## The Linux build
+
+The same spec file builds the Linux folder (`PhotoLifeboat` and `photolifeboat-cli`). The window uses Qt's web
+engine through pywebview's Qt backend, carried inside the build so it does not depend on what the desktop has
+installed; the spec leaves out the parts of Qt the window does not use. `packaging/linux/build_appimage.sh`
+wraps the folder in one AppImage (appimagetool 1.9.1, checked against its SHA-256), whose `AppRun` starts the
+window when given no arguments and the command line otherwise (`./PhotoLifeboat-….AppImage drives`).
+`.github/workflows/linux-build.yml` builds it on Ubuntu 22.04 (so it needs glibc 2.35 or newer), smoke-tests
+the command line and the window under Xvfb, and adds it to the dev-build and to numbered releases.
+
+Reading a card on Linux (`src/photolifeboat/linux.py`): drives come from `lsblk --json`. A card is opened
+directly if allowed, otherwise through UDisks' `OpenDevice` over D-Bus (read-only; desktops allow this for
+plugged-in removable drives without a password, and show their password window otherwise). Only without
+UDisks does the copy helper rerun itself as root through `pkexec`; files it makes are then handed back to the
+person (`PKEXEC_UID`/`SUDO_UID`). From a terminal, `sudo photolifeboat clone /dev/sdb card.img` also works.
+Programs started from the build (the file manager, the browser, pkexec) get the system's own library path back.
+
+Running from source on Linux: `pip install -e ".[window]" "pywebview[qt]"` (or pywebview with GTK from the
+system packages); without either, the wizard opens in the browser.
+
 ## Command line
 
 If you already have an image of the card (on Windows, `photolifeboat-cli.exe` from the build):

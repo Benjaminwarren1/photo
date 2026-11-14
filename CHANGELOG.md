@@ -5,6 +5,10 @@ the section into the GitHub release notes, and refuses to publish a version that
 
 ## Unreleased
 
+- **Linux version.** A single download (an AppImage) that runs on most desktop Linux from the last few years,
+  with the same step-by-step window as on Windows. Cards plugged into the computer are read without needing a
+  password on most desktops; where one is needed, the computer's usual password window asks for it.
+
 ## 0.1.0
 
 The first public release of **Photo Lifeboat**, free software that gets deleted photos back from memory cards.
