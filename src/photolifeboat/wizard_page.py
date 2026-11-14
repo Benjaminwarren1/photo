@@ -75,7 +75,8 @@ function err(){return S.message?`<p class="err" role="alert">${esc(S.message)}</
 const views={
  start(){return `<h1>Get your photos back</h1>
   <p>This copies your memory card onto this computer, then recovers deleted photos from the copy. Your card is only ever read, never changed.</p>
-  <div class="note"><b>Before you start:</b> stop using the card. Don't take photos on it, don't save anything to it, and don't let anything format it.</div>
+  <div class="note"><b>Before you start:</b> stop using the card. Don't let anything format it, don't take photos on it, and don't save anything to it.</div>
+  <p class="soft">Already formatted the card? It's still worth trying. Photos can often be rescued from a formatted card.</p>
   <div class="actions"><button class="go" onclick="go('where')">Recover from a card</button>
   <button onclick="go('image')">I already have a card image file</button></div>`;},
  where(){const back=S.step==="confirm";

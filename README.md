@@ -24,14 +24,21 @@ documents, music and voice recordings, and sorts them into folders for you.
 
 ## First: stop using the card
 
-This matters more than anything else. Until your photos are rescued:
+**Don't format the card, even if your computer or camera asks you to.** If a message says the card needs
+formatting, click **Cancel**.
+
+Until your photos are rescued, also:
 
 - don't take any more photos on the card,
-- don't copy anything onto it,
-- don't format it, even if the computer or camera asks you to.
+- don't copy anything onto it.
 
 Each new photo can land on top of an old one, and a photo that has been written over is gone for good.
 No program anywhere can bring it back.
+
+> **Already formatted it?** Don't give up, it's still worth a try. The usual kind of format, on a camera, a
+> phone or Windows' Quick Format, usually only wipes the card's list of files and leaves the photos themselves in place.
+> In our tests Photo Lifeboat has rescued photos from formatted cards, and even from cards that were formatted
+> and then used again. (A Windows full format, with Quick Format unticked, does wipe the photos for good.)
 
 If your card has a small lock switch on its side, slide it to **Lock**. The program never changes the
 card, but locking it keeps everything else from changing it too.
