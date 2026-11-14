@@ -61,7 +61,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--progress", action="store_true", help="as for recover")
     s = sub.add_parser("sheet", help="contact sheets: numbered grids of recovered photos, for checking them by eye")
     s.add_argument("folder", type=Path, help="a results folder (the one holding report.json)")
-    s.add_argument("--which", choices=["complete", "partial", "all"], default="complete")
+    s.add_argument("--which", choices=["complete", "partial", "all"], default="complete",
+                   help="which photos to show (default: complete). Small pictures (under 640 px, such as "
+                        "thumbnails and app images) are always left out")
     s.add_argument("--to", type=Path, help="where to save the sheets (default: a new temporary folder)")
     s.add_argument("--per-sheet", type=int, default=20)
     s.add_argument("--json", action="store_true")
