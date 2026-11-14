@@ -117,7 +117,11 @@ const views={
   <p style="margin-top:1rem"><b>Now:</b> ${esc((S.log||[]).slice(-1)[0]||"Starting")}</p>
   ${S.progress&&S.progress.total?`<progress max="${S.progress.total}" value="${S.progress.done}"></progress>`:`<progress></progress>`}
   <p class="soft">${S.progress&&S.progress.total?`${S.progress.done} of ${S.progress.total} in this step`:""}</p>`;},
- done(){const c=(S.summary||{}).counts||{};
+ done(){const c=Object.assign({},(S.summary||{}).counts||{});
+  // "Needs review" covers two kinds: photos with pieces to choose between (the ones "Decide now" shows), and
+  // files that failed the final check, where there is nothing to choose. They are counted apart so the
+  // numbers on this screen agree with each other.
+  const ask=Math.min(S.to_review||0,c["Needs review"]||0); c["_look"]=(c["Needs review"]||0)-ask; c["Needs review"]=ask;
   const uk=(S.summary||{}).unverified_kinds;
   const got=(c["Verified"]||0)+(c["Complete, no preview"]||0)+(c["Recovered, unverified"]||0);
   const rows=[["Verified","Recovered and double-checked","Each one matches the small preview picture the camera stored inside it, so the tool knows the picture is right."],
@@ -125,6 +129,7 @@ const views={
    ["Recovered, unverified","Recovered, but the tool cannot check them",`${uk?`${[[uk.other,"other files (documents, music, app data and the like)"],[uk.videos,"videos"],[uk.photos,"photos of a kind with nothing to check against"]].filter(x=>x[0]).map(x=>x[0].toLocaleString()+" "+x[1]).join(", ")}. `:""}They are all there from start to end, but nothing inside this kind of file lets the tool confirm it is undamaged. Open the ones you care about to make sure.`],
    ["Partial","Partly recovered","The top part of the picture, or part of a video, saved in its own folder. The rest could not be found, most likely because newer files were saved over it. What has been overwritten is gone for good: no tool or lab can bring it back."],
    ["Needs review","Waiting for you to decide","Close calls where the tool would rather ask than guess."],
+   ["_look","Need a closer look","The tool could not confirm these are right, and there is no choice to make. They are saved in the Partial folder: open them to check. The report says what was wrong with each."],
    ["Not recoverable","Could not be recovered","Newer files have been saved over them. What has been overwritten is gone for good: no other tool or paid lab can bring it back, so there is no need to keep trying."]]
    .filter(r=>c[r[0]]).map(r=>`<tr><td class="n">${c[r[0]].toLocaleString()}</td><td><b>${r[1]}</b><div class="soft why">${r[2]}</div></td></tr>`).join("");
   return `<h1>Finished</h1>${((S.summary||{}).findings||[]).map(f=>`<div class="note">${esc(f.text)}</div>`).join("")}
