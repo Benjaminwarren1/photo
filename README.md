@@ -28,8 +28,8 @@ card, but locking it keeps everything else from changing it too.
 ## How to use it (Windows 10 and 11)
 
 1. Download **PhotoRecovery-…-setup.exe** from the [latest release](../../releases/latest) and open it.
-2. Windows may show a blue box saying "Windows protected your PC". This appears for any new program that
-   has not paid for a security certificate yet. Click **More info**, then **Run anyway**.
+2. Windows will probably show a blue box saying "Windows protected your PC". Click **More info**, then
+   **Run anyway**. (See [Why does Windows warn me?](#why-does-windows-warn-me) below.)
 3. Click through the installer. It takes a few seconds and doesn't need an administrator. Photo Recovery
    then opens, and you'll find it in the Start menu and on your desktop.
 4. Choose where your rescued photos should go: your **Pictures** folder, your **Desktop**, or somewhere else
@@ -97,6 +97,19 @@ tools assume each photo is in one piece, so these photos come back with a grey o
 This program follows each photo piece by piece and checks every piece against the small preview that cameras
 save inside every photo, so more of them come back whole. It also tells you honestly which photos it could
 check fully and which it could not.
+
+## Why does Windows warn me?
+
+Windows shows "Windows protected your PC" for any program that is new to it and has not been signed with a
+paid security certificate. It does not mean anything harmful was found: it means Windows doesn't know the
+program yet. Photo Recovery is not signed yet because a certificate costs money every year.
+
+We plan to get it signed, through SignPath's free signing for open-source projects or with the help of
+donations. Even after that, the warning fades only as more people download the program and Windows comes to
+trust it.
+
+If you'd rather check first, every release lists a SHA256 fingerprint for each download, and all the code is
+published here for anyone to read.
 
 ## Help and feedback
 
