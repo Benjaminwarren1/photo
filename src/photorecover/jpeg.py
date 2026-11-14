@@ -48,6 +48,7 @@ class NotJpeg(Exception):
 
 @dataclass
 class JpegInfo:
+    """What a photo's header says: its size, how its data is coded, and its embedded preview."""
     width: int
     height: int
     progressive: bool

@@ -197,6 +197,7 @@ def ts_begins(buf, pos: int, step: int, off: int) -> bool:
 
 
 def check_ts(data, ext: str = "mts") -> tuple[str, str] | str | None:
+    """('unverified', note) for a whole transport stream, or None when it is clearly not one any more."""
     n = len(data)
     run, step, _off = ts_run(data, 0, n)
     if not run:

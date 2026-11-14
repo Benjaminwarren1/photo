@@ -253,6 +253,7 @@ class UnreadableVolume(LegacyFatVolume):
 
 
 def _format_name(m) -> str:
+    """The file system on a drive this tool cannot read, in plain words."""
     from .fat import find_partitions
     for off in [0] + [o for o in find_partitions(m) if o]:
         b = bytes(m[off:off + 1100])

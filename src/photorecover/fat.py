@@ -23,6 +23,7 @@ class NotFat(Exception):
 
 @dataclass
 class Entry:
+    """One folder entry, live or deleted, as either file system records it."""
     name: str                 # long name if one survived, else the 8.3 name
     short: str
     deleted: bool             # marked 0xE5
@@ -38,6 +39,7 @@ class Entry:
 
     @property
     def ext(self) -> str:
+        """The file ending, lower case, without the dot."""
         return file_ext(self.name)
 
 

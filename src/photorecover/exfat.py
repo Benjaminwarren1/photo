@@ -17,6 +17,7 @@ from .util import ceil_div
 
 
 def find_exfat(m) -> int | None:
+    """Where the exFAT volume on this image starts: at the very beginning, or in a partition."""
     def is_boot(off: int) -> bool:
         return off + 512 <= len(m) and m[off + 3:off + 11] == b"EXFAT   " and m[off + 510:off + 512] == b"\x55\xaa"
 
@@ -150,6 +151,7 @@ class ExFatVolume(ClusterVolume):
         return out, bad
 
     def _dir_clusters(self, e: Entry) -> list[int]:
+        """The clusters of a folder, from its entry."""
         n = max(1, ceil_div(e.size, self.cl))
         if getattr(e, "contiguous", False):
             return [c for c in range(e.start, e.start + n) if self.valid(c)]
@@ -167,6 +169,8 @@ class ExFatVolume(ClusterVolume):
         return ch if ch and len(ch) == n else None
 
     def scan_entries(self, progress=None) -> list[Entry]:
+        """Every entry on the volume: the live tree from the root, plus folder data found anywhere
+        else on the card (folders that were deleted, or that a format left behind)."""
         out: list[Entry] = []
         seen: set[int] = set()
         dir_path: dict[int, str] = {}

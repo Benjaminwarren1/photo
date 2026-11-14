@@ -540,6 +540,7 @@ class Recovery(FindUnlisted, Review, SaveResults):
                 it.grade, it.chain, it.candidates, it.percent, it.method = GRADE_LOST, [], [], 0.0, ""
 
     def _accept(self, it: Item, r: Result, method: str) -> None:
+        """Record a photo the rebuilder proved complete."""
         it.chain, it.percent, it.picks = r.chain, 100.0, r.picks
         it.size = r.size
         it.method = method
@@ -707,6 +708,7 @@ class Recovery(FindUnlisted, Review, SaveResults):
         return info
 
     def _counts(self) -> dict[str, int]:
+        """How many files ended up with each grade."""
         counts: dict[str, int] = {}
         for it in self.items:
             counts[it.grade] = counts.get(it.grade, 0) + 1

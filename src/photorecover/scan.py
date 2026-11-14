@@ -141,6 +141,7 @@ class FindUnlisted:
                 self._attempt(None, self._scan_other, c, kind)
 
     def _found_other(self, c, kind, ext, size, chain, grade, note, percent=100.0) -> None:
+        """Record a file found by scanning, numbered within its kind (found_png_00001.png ...)."""
         numbers = self._numbers
         numbers[kind] += 1
         it = Item(name=f"found_{kind}_{numbers[kind]:05d}.{ext}", folder="Found by scanning", size=size, start=c,
@@ -254,6 +255,7 @@ class FindUnlisted:
         return k - c
 
     def _scan_avi(self, c: int, pos: int, data_end: int) -> None:
+        """An AVI video: whole and checked against its own index if it can be, else the frames that are there."""
         vol, cl = self.vol, self.vol.cl
         if bytes(vol.m[pos + 8:pos + 12]) != b"AVI ":
             return

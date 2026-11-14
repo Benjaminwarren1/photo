@@ -24,6 +24,7 @@ MAX_MOOV = 64 << 20
 
 
 def boxes(buf, a: int, b: int):
+    """(type, start, size, header length) of each box between a and b; stops at the first that does not fit."""
     while a + 8 <= b:
         size, typ = struct.unpack_from(">I4s", buf, a)
         head = 8
@@ -40,6 +41,7 @@ def boxes(buf, a: int, b: int):
 
 @dataclass
 class Track:
+    """One track of a video (picture, sound, data) and where each of its samples lies in the file."""
     codec: str
     handler: str
     samples: list[tuple[int, int]]      # (file offset, size)
@@ -55,6 +57,7 @@ def parse_moov(buf: bytes) -> list[Track] | None:
 
 
 def _parse_moov(buf: bytes) -> list[Track]:
+    """Read every track's sample table: sizes (stsz), chunk offsets (stco/co64), samples per chunk (stsc)."""
     n = len(buf)
 
     def find(a, b, path):
@@ -137,6 +140,7 @@ def checkpoint_ok(tr: Track, data: bytes, size: int) -> bool | None:
 
 @dataclass
 class VideoResult:
+    """How rebuilding one video turned out."""
     status: str = "failed"            # complete | partial | failed
     reason: str = ""
     chain: list[int] = field(default_factory=list)   # -1 = cluster missing on the card
@@ -147,6 +151,8 @@ class VideoResult:
 
 
 class VideoRebuilder:
+    """Rebuilds videos on one card from their own index (see the top of this file)."""
+
     def __init__(self, vol, avail: np.ndarray):
         self.vol, self.avail = vol, avail
         self.img = np.frombuffer(vol.m, np.uint8)
@@ -217,6 +223,9 @@ class VideoRebuilder:
         return None
 
     def rebuild(self, start: int, size: int) -> VideoResult:
+        """Walk the video that starts at cluster start, cluster by cluster, checking every frame and
+        sound packet its index places in each one. Where they stop matching, search the card for
+        the cluster where they match again; leave a gap (-1) where no single cluster does."""
         vol, cl = self.vol, self.vol.cl
         res = VideoResult()
         if not vol.valid(start):

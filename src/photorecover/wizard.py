@@ -41,6 +41,9 @@ PICKER = None
 
 
 class Session:
+    """Where one person has got to in the wizard, and everything it needs to carry on. The page
+    asks for state() every moment and sends the person's clicks to act()."""
+
     def __init__(self):
         self.lock = threading.Lock()
         self.step = "start"            # start | plug | confirm | cloning | recovering | done | error
@@ -87,6 +90,39 @@ class Session:
             self.summary = self.rec.summary
 
     # ---- actions ----------------------------------------------------------
+    def act(self, action: str, body: dict) -> dict:
+        """Do what a button on the page asked for. Returns anything to send back besides the state."""
+        if action == "begin_card":
+            self.begin_card()
+        elif action == "find_card":
+            self.find_card()
+        elif action == "choose":
+            self.choose(str(body.get("id", "")))
+        elif action == "set_folder":
+            self.folder = Path(str(body.get("folder") or self.folder))
+        elif action == "set_place":
+            self.set_place(str(body.get("place", "")), body.get("folder"))
+        elif action == "delete_copy":
+            self.delete_copy()
+        elif action == "start_clone":
+            self.start_clone(body.get("folder"))
+        elif action == "resume_clone":
+            self.resume_clone()
+        elif action == "use_image":
+            self.use_image(str(body.get("path", "")))
+        elif action == "review_pick":
+            self.review_pick(int(body.get("index", -1)), body.get("cluster"))
+            return {"review": self.review_next()}
+        elif action == "review_next":
+            return {"review": self.review_next()}
+        elif action == "restart":
+            self.__init__()
+        elif action == "open":
+            target = self.folder / "report.html" if body.get("what") == "report" else self.folder
+            if target.exists():
+                open_in_system(target)
+        return {}
+
     def begin_card(self):
         self.before = device.list_drives()
         self.step, self.message = "plug", ""
@@ -298,44 +334,18 @@ def make_server(session: Session, token: str, port: int = 0) -> ThreadingHTTPSer
             a = self.path.removeprefix("/api/")
             extra = {}
             if a == "pick":
+                # outside the lock: the chooser stays open for as long as the person takes
                 extra["path"] = pick_path("folder" if body.get("kind") == "folder" else "file")
                 if extra["path"]:
                     session.message = ""        # whatever was wrong before, a fresh choice starts clean
             else:
                 with session.lock:
-                    if a == "begin_card":
-                        session.begin_card()
-                    elif a == "find_card":
-                        session.find_card()
-                    elif a == "choose":
-                        session.choose(str(body.get("id", "")))
-                    elif a == "set_folder":
-                        session.folder = Path(str(body.get("folder") or session.folder))
-                    elif a == "set_place":
-                        session.set_place(str(body.get("place", "")), body.get("folder"))
-                    elif a == "delete_copy":
-                        session.delete_copy()
-                    elif a == "start_clone":
-                        session.start_clone(body.get("folder"))
-                    elif a == "resume_clone":
-                        session.resume_clone()
-                    elif a == "use_image":
-                        session.use_image(str(body.get("path", "")))
-                    elif a == "review_pick":
-                        session.review_pick(int(body.get("index", -1)), body.get("cluster"))
-                        extra["review"] = session.review_next()
-                    elif a == "review_next":
-                        extra["review"] = session.review_next()
-                    elif a == "restart":
-                        session.__init__()
-                    elif a == "open":
-                        target = session.folder / "report.html" if body.get("what") == "report" else session.folder
-                        if target.exists():
-                            open_in_system(target)
-                    elif a == "quit":
+                    if a == "quit":
                         threading.Thread(target=self.server.shutdown, daemon=True).start()
                         if QUIT is not None:
                             QUIT()
+                    else:
+                        extra = session.act(a, body)
             self._send(200, json.dumps(dict(session.state(), **extra)).encode())
 
     return ThreadingHTTPServer(("127.0.0.1", port), Handler)
