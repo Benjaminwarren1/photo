@@ -112,11 +112,10 @@ untouched. That's why Photo Lifeboat copies the card first and only ever works f
 
 ## Why it exists
 
-Photo Lifeboat started with an accident. An AI assistant working on Ben's computer (Ben runs this project)
-deleted everything on a 2 GB camera card, more than 1,300 files. Getting them back took a lot of trial and
-error and code written specially for the job, because many of the photos had been stored in scattered pieces
-that ordinary recovery programs can't put back together. In the end nearly every photo came back whole, and
-all 35 videos were rebuilt.
+Photo Lifeboat started with an accident. We deleted more than 1,300 files. Getting them back took a lot of
+trial and error and code written specially for the job, because many of the photos had been stored in scattered
+pieces that ordinary recovery programs can't put back together. In the end nearly every photo came back whole,
+and all 35 videos were rebuilt.
 
 None of that would have been easy for someone who just wants their holiday photos back. So we took what we
 learned and built one simple program that does the whole job, step by step, in plain English.
@@ -139,8 +138,9 @@ their code. It's a separate program that does these jobs together, behind one si
 ## Made almost entirely by AI
 
 We want to be upfront about this. Nearly all of Photo Lifeboat (the program, its tests and this page) was
-written by Claude, an AI made by Anthropic. Ben decided what it should do, tried it out on real cards and
-made the decisions along the way, but the AI did the writing.
+written by AI. A person decided what it should do, tried it out on real cards and made the decisions along the
+way, but the AI did the writing. The fact is I'm a hobbyist programmer, and AI is better at it than I am. That
+doesn't mean it's better at it than everyone, though, and that's why the code is totally open source.
 
 AI can get things wrong, just as people can, so the program is built to be careful:
 
