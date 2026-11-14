@@ -136,11 +136,37 @@ def find_old_layout(vol: FatVolume, entries: list[Entry], log=None):
     """If folders survive on the card that belong to an earlier layout (it was reformatted with
     different settings), returns a volume for that layout; otherwise None. Those folders need not
     be visible in the current layout at all, so the whole card is looked over, not just `entries`."""
-    return _infer(vol.m, vol, log, entries)
+    return _infer(vol.m, vol, log, entries, elsewhere=_other_volume_spans(vol))
 
 
-def _infer(m, vol: FatVolume | None, log=None, entries: list[Entry] | None = None, survey=None):
-    """Work out an earlier layout from the folders and photo starts found on the card."""
+def _other_volume_spans(vol: FatVolume) -> list[tuple[int, int]]:
+    """Where the card's other readable partitions lie, as byte ranges. Their folders and photos
+    belong to them (each is recovered in its own right), not to an older layout of this one."""
+    from .exfat import ExFatVolume
+    from .fat import all_volumes
+    out = []
+    for kind, off in all_volumes(vol.m):
+        if off == getattr(vol, "part", None):
+            continue
+        try:
+            v = ExFatVolume(vol.m, off) if kind == "exfat" else FatVolume(vol.m, off)
+            out.append((off, v.data_off + v.ncl * v.cl))
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+def _outside(pos: np.ndarray, spans: list[tuple[int, int]]) -> np.ndarray:
+    keep = np.ones(len(pos), bool)
+    for a, b in spans:
+        keep &= (pos < a) | (pos >= b)
+    return keep
+
+
+def _infer(m, vol: FatVolume | None, log=None, entries: list[Entry] | None = None, survey=None,
+           elsewhere: list[tuple[int, int]] = ()):
+    """Work out an earlier layout from the folders and photo starts found on the card. Anything
+    inside the byte ranges in `elsewhere` (the card's other partitions) is left out."""
     total = len(m) // SECTOR
     survey = survey if survey is not None else getattr(vol, "survey", None)
     sigs = survey.sigs if survey is not None else _signature_maps(m)
@@ -149,7 +175,10 @@ def _infer(m, vol: FatVolume | None, log=None, entries: list[Entry] | None = Non
         # whichever layout they belong to. Only the part in front of that is left to look at.
         front = _Sectors(m, vol.data_off)
         front.survey = survey
-        found = [e for e in entries if not e.in_tree] + front.scan_entries()
+        ahead = front.scan_entries()
+        if elsewhere:
+            ahead = [e for e in ahead if _outside(np.array([e.where * SECTOR]), elsewhere)[0]]
+        found = [e for e in entries if not e.in_tree] + ahead
     else:
         whole = _Sectors(m)
         whole.survey = survey
@@ -171,6 +200,8 @@ def _infer(m, vol: FatVolume | None, log=None, entries: list[Entry] | None = Non
             return _with(LegacyFatVolume(m, cs, off, vol), survey)
     # no folder entries to go on: fall back on where photos start
     pos = sigs["jpg"].astype(np.int64) * SECTOR
+    if elsewhere:
+        pos = pos[_outside(pos, elsewhere)]
     sizes = CLUSTER_SIZES
     if vol is not None:
         # Photos that sit where the current layout puts files say nothing about an older one, and
