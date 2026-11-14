@@ -186,6 +186,13 @@ trust it.
 If you'd rather check first, every release lists a SHA256 fingerprint for each download, and all the code is
 published here for anyone to read.
 
+## Using it with an AI assistant
+
+If you use an AI assistant that can run programs on your computer (such as Claude, OpenAI's Codex or Gemini
+on the desktop), it can run Photo Lifeboat for you and explain each step. It can also look over the rescued
+photos to spot any that came back wrong. Bear in mind that when an AI looks at a photo, the photo is sent to
+the company that runs the AI. How to set it up: [docs/AI-ASSISTANTS.md](docs/AI-ASSISTANTS.md).
+
 ## Help and feedback
 
 We'd love to hear how it went, good or bad. [Tell us here](../../issues/new/choose): there's a short form

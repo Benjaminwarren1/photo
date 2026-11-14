@@ -5,6 +5,12 @@ the section into the GitHub release notes, and refuses to publish a version that
 
 ## Unreleased
 
+- An AI assistant can now run a recovery for you, step by step, through the command line or as an MCP tool
+  server, and look over the rescued photos to spot any that came back wrong. It is told to ask before it looks,
+  because that sends your photos to the AI company. See docs/AI-ASSISTANTS.md.
+- Extra safety checks: the program refuses to save the card's copy onto a drive directly, to recover straight
+  from a drive instead of a copy, or to treat the computer's own system disk as a card.
+
 ## 0.1.0
 
 The first public release of **Photo Lifeboat**, free software that gets deleted photos back from memory cards.

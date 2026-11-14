@@ -278,6 +278,13 @@ def clone(source: str, dest: Path, size: int | None = None, status_file: Path | 
     image (<image>.bad.json). If the card stops responding, what has been copied is kept, and
     running the same copy again carries on from there."""
     dest = Path(dest)
+    if is_device(dest):
+        # A copy is only ever written to a file. Writing to a drive would wipe whatever is on it.
+        info = dict(state="error", error="device", done=0, total=0, bad_bytes=0, seconds=0.0,
+                    message="The copy must be saved as a file in a folder, not onto a drive.")
+        if status_file:
+            _put(Path(status_file), json.dumps(info), must=False)
+        return info
     dest.parent.mkdir(parents=True, exist_ok=True)
     map_file = Path(str(dest) + ".map.json")
     bad_file = Path(str(dest) + ".bad.json")
@@ -584,3 +591,17 @@ def start_clone(drive: Drive, dest: Path, status_file: Path) -> None:
 
 def drive_dict(d: Drive) -> dict:
     return dict(asdict(d), label=d.label())
+
+
+def is_device(path) -> bool:
+    """True when path names a whole drive or partition rather than a file: \\\\.\\PhysicalDrive1, E:,
+    /dev/sdb and so on. Nothing this program writes may ever go to one of those."""
+    import stat
+    p = str(path)
+    if p.startswith(("\\\\.\\", "\\\\?\\GLOBALROOT", "//./")) or (len(p) in (2, 3) and p[1:2] == ":" and p[2:] in ("", "\\", "/")):
+        return True
+    try:
+        mode = os.stat(p).st_mode
+    except OSError:
+        return False
+    return stat.S_ISBLK(mode) or stat.S_ISCHR(mode)

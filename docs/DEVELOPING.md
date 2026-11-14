@@ -44,6 +44,11 @@ photolifeboat recover card.img --out recovered
 
 `photolifeboat pilot card.img` runs the same recovery and then takes the close calls as JSON lines on standard input (`unresolved`, `candidates`, `pick`), so a script or an AI assistant can look at the candidate pictures and choose. A choice is only kept if the finished photo passes the same checks as any other.
 
+For AI assistants and other programs: `drives --json`, `clone --json`, `recover --progress` (JSON lines on
+standard error), `sheet` (contact sheets for checking by eye), `guide` (the rules and steps an assistant
+should follow) and `mcp` (an MCP server on standard input and output, standard library only). The code is in
+`agent.py` and `mcp_server.py`; how to use it is in [AI-ASSISTANTS.md](AI-ASSISTANTS.md).
+
 Output:
 
 | Folder | What goes in it |
