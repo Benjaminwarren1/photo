@@ -98,14 +98,37 @@ untouched. That's why Photo Lifeboat copies the card first and only ever works f
 - **Nothing leaves your computer.** Your photos are not uploaded anywhere.
 - **The code is open.** Anyone can read exactly what it does.
 
+## Why it exists
+
+Photo Lifeboat started with an accident. An AI assistant working on Ben's computer (Ben runs this project)
+deleted everything on a 2 GB camera card, more than 1,300 files. Getting them back took a lot of trial and
+error and code written specially for the job, because many of the photos had been stored in scattered pieces
+that ordinary recovery programs can't put back together. In the end nearly every photo came back whole, and
+all 35 videos were rebuilt.
+
+None of that would have been easy for someone who just wants their holiday photos back. So we took what we
+learned and built one simple program that does the whole job, step by step, in plain English.
+
+It brings together jobs that usually need separate programs:
+
+- **Undeleting.** Like [Recuva](https://www.ccleaner.com/recuva), it reads the card's own list of deleted
+  files, so they come back at their real size.
+- **Carving.** Like [PhotoRec](https://www.cgsecurity.org/wiki/PhotoRec), it searches the whole card for
+  photos, videos and other files by what they look like inside, so it still finds them after the card has been
+  formatted or its file list is damaged.
+- **Rebuilding broken photos.** Like photo repair tools, it puts back together photos that were saved in pieces,
+  and saves the part it can when the rest is gone.
+- **Checking.** It checks every photo it rescues against the small preview the camera saved inside it, and
+  tells you plainly which ones it could check.
+
+Those programs are excellent and we learned a lot from them, PhotoRec especially. Photo Lifeboat doesn't use
+their code. It's a separate program that does these jobs together, behind one simple set of steps.
+
 ## Made almost entirely by AI
 
 We want to be upfront about this. Nearly all of Photo Lifeboat (the program, its tests and this page) was
 written by Claude, an AI made by Anthropic. A person decided what it should do, tried it out on real cards and
 made the decisions along the way, but the AI did the writing.
-
-It started when an AI assistant accidentally deleted everything on a memory card. Getting those photos back
-taught us a lot about how cards store photos, and this program is what came out of it.
 
 AI can get things wrong, just as people can, so the program is built to be careful:
 
